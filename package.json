@@ -1,0 +1,23 @@
+{
+  "name": "tidygpt-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TidyGPT Monorepo",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "vitest": "^1.1.0",
+    "prettier": "^3.1.0",
+    "eslint": "^8.56.0"
+  }
+}
