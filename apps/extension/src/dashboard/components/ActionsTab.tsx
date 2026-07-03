@@ -1,57 +1,185 @@
-import { useState } from "react";
-import type { ConversationCandidate } from "@tidygpt/shared";
+import { useState, useEffect } from "react";
+import type { ConversationCandidate, CleanerSettings } from "@tidygpt/shared";
+import { defaultSettings } from "@tidygpt/shared";
+import { saveJob, getSettings } from "@tidygpt/storage";
 
-export function ActionsTab({ candidates, onUpdate }: { candidates: ConversationCandidate[], onUpdate: () => void }) {
+export function ActionsTab({ candidates }: { candidates: ConversationCandidate[] }) {
+  const [confirmDelete, setConfirmDelete] = useState("");
   const [running, setRunning] = useState(false);
-  const [typedConfirm, setTypedConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [dryRunReport, setDryRunReport] = useState<any>(null);
+  const [settings, setSettings] = useState<CleanerSettings>(defaultSettings);
 
-  const archiveQueue = candidates.filter(c => c.selectedAction === "archive" || c.selectedAction === "archive_then_delete");
-  const deleteQueue = candidates.filter(c => c.selectedAction === "delete" || c.selectedAction === "archive_then_delete");
+  useEffect(() => {
+    getSettings().then(s => {
+      if (s) setSettings(s);
+    });
+  }, []);
+
+  const pendingArchive = candidates.filter(c => c.selectedAction === 'archive');
+  const pendingDelete = candidates.filter(c => c.selectedAction === 'delete');
+  const pendingBoth = candidates.filter(c => c.selectedAction === 'archive_then_delete');
+
+  const totalActions = pendingArchive.length + pendingDelete.length + pendingBoth.length;
   
-  const hasDelete = deleteQueue.length > 0;
-  const canRun = (archiveQueue.length > 0 || deleteQueue.length > 0) && (!hasDelete || typedConfirm === "CONFIRM");
+  const handleDryRun = () => {
+    const report = {
+      archiveCount: pendingArchive.length + pendingBoth.length,
+      deleteCount: pendingDelete.length + pendingBoth.length,
+      estimatedTimeMinutes: Math.ceil(((pendingArchive.length + pendingDelete.length + pendingBoth.length) * 3) / 60),
+      items: [
+        ...pendingArchive.map(c => ({ title: c.title, action: "Archive" })),
+        ...pendingDelete.map(c => ({ title: c.title, action: "Delete" })),
+        ...pendingBoth.map(c => ({ title: c.title, action: "Archive then Delete" }))
+      ]
+    };
+    setDryRunReport(report);
+  };
 
-  async function executeActionPlan() {
+  const handleExecute = async () => {
+    const confirmStr = settings.deleteConfirmationString || "CONFIRM";
+    if (pendingDelete.length > 0 && confirmDelete !== confirmStr) {
+      setError(`You must type "${confirmStr}" to execute deletes.`);
+      return;
+    }
+    setError("");
     setRunning(true);
-    alert("Dry run executed. In a real scenario, this would loop over the queue and send messages to the content script using UI automation selectors.");
-    setRunning(false);
-  }
+    
+    const jobId = "job_" + Date.now();
+    const actionQueue = [...pendingArchive, ...pendingDelete, ...pendingBoth];
+
+    // Construct and persist the CleanupJob to IDB before dispatching
+    const job = {
+      jobId,
+      source: "live_ui" as const,
+      mode: "archive" as const,
+      status: "review_ready" as const,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      progress: 0,
+      settingsSnapshot: settings,
+      candidates: actionQueue,
+      actionPlan: {
+        archiveCount: pendingArchive.length + pendingBoth.length,
+        deleteCount: pendingDelete.length + pendingBoth.length,
+        blockedCount: 0,
+        uncertainCount: 0,
+        estimatedTimeMs: actionQueue.length * 3000,
+      },
+      results: [],
+      errors: [],
+    };
+
+    try {
+      await saveJob(job);
+    } catch (err: any) {
+      setError("Failed to save job to local database: " + err.message);
+      setRunning(false);
+      return;
+    }
+    
+    chrome.runtime.sendMessage({ 
+      type: "EXECUTE_ACTION_PLAN", 
+      payload: { jobId } 
+    }, (res) => {
+      if (!res?.ok) {
+        setError(res?.error || "Failed to start job in service worker");
+        setRunning(false);
+      } else {
+        setRunning(false);
+        alert("Execution started in background. Monitor progress in Logs.");
+      }
+    });
+  };
 
   return (
     <div>
-      <h2 style={{ fontSize: 24, fontWeight: 600, margin: "0 0 24px" }}>Action Runner</h2>
-      
-      <div style={{ padding: 24, background: "#18181b", borderRadius: 8, border: "1px solid #27272a", maxWidth: 600 }}>
-        <h3 style={{ marginTop: 0 }}>Action Plan</h3>
-        <ul style={{ listStyle: "none", padding: 0, margin: "0 0 24px", color: "#a1a1aa" }}>
-          <li style={{ padding: "8px 0", borderBottom: "1px solid #27272a" }}>Archive: <strong style={{ color: "#fafafa" }}>{archiveQueue.length}</strong> items</li>
-          <li style={{ padding: "8px 0", borderBottom: "1px solid #27272a" }}>Delete: <strong style={{ color: "#f87171" }}>{deleteQueue.length}</strong> items</li>
-        </ul>
+      <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 20px", letterSpacing: "-0.01em" }}>Execution Plan</h2>
 
-        {hasDelete && (
-          <div style={{ marginBottom: 24, padding: 16, background: "#450a0a", border: "1px solid #7f1d1d", borderRadius: 6 }}>
-            <h4 style={{ margin: "0 0 8px", color: "#fecaca" }}>Destructive Action Warning</h4>
-            <p style={{ margin: "0 0 12px", color: "#fca5a5", fontSize: 13 }}>
-              You have selected items for direct deletion. This cannot be undone. Type <strong>CONFIRM</strong> to unlock the runner.
-            </p>
-            <input 
-              type="text" 
-              value={typedConfirm} 
-              onChange={e => setTypedConfirm(e.target.value)} 
-              placeholder="CONFIRM"
-              style={{ width: "100%", padding: 8, background: "#18181b", border: "1px solid #7f1d1d", color: "#fafafa", borderRadius: 4 }}
-            />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
+        <div style={{ background: "#111113", padding: 20, borderRadius: 8, border: "1px solid #1e1e21" }}>
+          <div style={{ color: "#52525b", fontSize: 12, marginBottom: 8, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.04em" }}>To Archive</div>
+          <div style={{ fontSize: 32, fontWeight: 600, color: "#60a5fa" }}>{pendingArchive.length + pendingBoth.length}</div>
+        </div>
+        <div style={{ background: "#111113", padding: 20, borderRadius: 8, border: "1px solid #1e1e21" }}>
+          <div style={{ color: "#52525b", fontSize: 12, marginBottom: 8, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.04em" }}>To Delete</div>
+          <div style={{ fontSize: 32, fontWeight: 600, color: "#f87171" }}>{pendingDelete.length + pendingBoth.length}</div>
+        </div>
+      </div>
+
+      <div style={{ padding: 24, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21", maxWidth: 600 }}>
+        <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600 }}>Run Queue Actions</h3>
+        
+        {totalActions === 0 ? (
+          <p style={{ color: "#71717a", fontSize: 13 }}>No cleanup actions staged. Mark items in the <strong>Review</strong> tab first.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {pendingDelete.length > 0 && (
+              <div style={{ padding: 16, background: "#1c1010", border: "1px solid #450a0a", borderRadius: 6 }}>
+                <div style={{ color: "#fca5a5", fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Warning: Permanent Deletion</div>
+                <div style={{ color: "#f87171", fontSize: 12, marginBottom: 12 }}>You have selected {pendingDelete.length} conversations for permanent deletion. This cannot be undone. Type <strong style={{ color: "#fff" }}>{settings.deleteConfirmationString || "CONFIRM"}</strong> below to authorize.</div>
+                <input 
+                  type="text" 
+                  value={confirmDelete}
+                  onChange={e => setConfirmDelete(e.target.value)}
+                  placeholder={`Type ${settings.deleteConfirmationString || "CONFIRM"}`}
+                  style={{ width: "100%", padding: "8px 12px", background: "#09090b", border: "1px solid #450a0a", color: "#fff", borderRadius: 4, fontSize: 13 }}
+                />
+              </div>
+            )}
+            
+            {error && <div style={{ color: "#f87171", fontSize: 13, fontWeight: 500 }}>{error}</div>}
+
+            <div style={{ display: "flex", gap: 12 }}>
+              <button 
+                onClick={handleDryRun}
+                disabled={running}
+                style={{ padding: "8px 16px", background: "#1e1e21", color: "#fff", border: "1px solid #27272a", borderRadius: 6, fontWeight: 500, fontSize: 13, cursor: "pointer", transition: "background 0.15s" }}
+                onMouseEnter={e => { if(!running) e.currentTarget.style.background = "#27272a"; }}
+                onMouseLeave={e => { if(!running) e.currentTarget.style.background = "#1e1e21"; }}
+              >
+                Dry Run Report
+              </button>
+              <button 
+                onClick={handleExecute}
+                disabled={running}
+                style={{ padding: "8px 16px", background: "#fff", color: "#000", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 13, cursor: "pointer", transition: "opacity 0.15s" }}
+                onMouseEnter={e => { if(!running) e.currentTarget.style.opacity = "0.9"; }}
+                onMouseLeave={e => { if(!running) e.currentTarget.style.opacity = "1"; }}
+              >
+                {running ? "Executing..." : "Execute Queue"}
+              </button>
+            </div>
           </div>
         )}
-
-        <button 
-          onClick={executeActionPlan}
-          disabled={!canRun || running}
-          style={{ width: "100%", padding: 12, background: canRun ? "#fafafa" : "#27272a", color: canRun ? "#09090b" : "#52525b", fontWeight: 600, border: "none", borderRadius: 6, cursor: canRun ? "pointer" : "not-allowed" }}
-        >
-          {running ? "Executing..." : "Execute Dry Run"}
-        </button>
       </div>
+
+      {dryRunReport && (
+        <div style={{ marginTop: 24, padding: 24, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21", maxWidth: 600 }}>
+          <h3 style={{ margin: "0 0 16px", fontSize: 14, fontWeight: 600 }}>Dry Run Report</h3>
+          <div style={{ color: "#71717a", fontSize: 13, marginBottom: 12 }}>
+            Estimated Time: ~{dryRunReport.estimatedTimeMinutes} minutes based on delay settings.
+          </div>
+          <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #1e1e21", borderRadius: 6, padding: "8px 12px", background: "#09090b" }}>
+            <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ color: "#52525b", textAlign: "left" }}>
+                  <th style={{ padding: "6px 0", fontWeight: 500 }}>Staged Title</th>
+                  <th style={{ padding: "6px 0", fontWeight: 500, textAlign: "right" }}>Staged Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dryRunReport.items.map((item: any, idx: number) => (
+                  <tr key={idx} style={{ borderTop: idx > 0 ? "1px solid #1e1e21" : "none" }}>
+                    <td style={{ padding: "6px 0", color: "#fafafa" }}>{item.title}</td>
+                    <td style={{ padding: "6px 0", color: item.action.includes("Delete") ? "#f87171" : "#60a5fa", textAlign: "right", fontWeight: 500 }}>{item.action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

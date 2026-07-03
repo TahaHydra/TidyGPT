@@ -1,3 +1,4 @@
 export * from './selectors/chatgpt-selectors';
-// export * from './waits/wait-for-stable-dom';
+export * from './selectors/helpers';
+export * from './selectors/probes';
 export * from './actions/runner';

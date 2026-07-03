@@ -16,9 +16,9 @@ function Popup() {
       if (tabs[0]?.id && tabs[0].url?.includes("chatgpt.com")) {
         chrome.tabs.sendMessage(tabs[0].id, { type: 'PING' }, (response) => {
           if (chrome.runtime.lastError) {
-            setHealth("Content script not loaded");
+            setHealth("Script not loaded");
           } else if (response?.ok) {
-            setHealth("Healthy (Connected)");
+            setHealth("Connected");
           }
         });
       } else {
@@ -28,56 +28,69 @@ function Popup() {
   }
 
   async function openDashboard() {
-    // Determine the dashboard URL (manifest typically maps options_page to dashboard.html)
     chrome.runtime.openOptionsPage();
   }
   
   async function clearQueue() {
-    await chrome.storage.local.remove(["tidygptCandidates", "tidygptLastScanAt"]);
-    load();
+    if (confirm("Are you sure you want to clear all discovered candidates?")) {
+      await chrome.storage.local.remove(["tidygptCandidates", "tidygptLastScanAt"]);
+      load();
+    }
   }
 
   useEffect(() => {
     load();
   }, []);
 
+  const isConnected = health === "Connected";
+  const statusColor = isConnected ? "#34d399" : "#f87171";
+  const statusBg = isConnected ? "#052e16" : "#450a0a";
+  const statusBorder = isConnected ? "#064e3b" : "#7f1d1d";
+
   return (
-    <main style={{ width: 320, padding: 20, fontFamily: "Inter, system-ui, sans-serif", background: "#09090b", color: "#fafafa" }}>
+    <main style={{ width: 320, padding: 18, fontFamily: "Inter, system-ui, sans-serif", background: "#09090b", color: "#fafafa" }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>TidyGPT</h1>
-        <div style={{ fontSize: 12, color: health.includes("Healthy") ? "#4ade80" : "#f87171", border: `1px solid ${health.includes("Healthy") ? "#166534" : "#991b1b"}`, padding: "2px 6px", borderRadius: 4, background: health.includes("Healthy") ? "#052e16" : "#450a0a" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ width: 22, height: 22, borderRadius: 5, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#fff" }}>T</div>
+          <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em" }}>TidyGPT</h1>
+        </div>
+        <div style={{ fontSize: 11, color: statusColor, border: `1px solid ${statusBorder}`, padding: "2px 6px", borderRadius: 4, background: statusBg, fontWeight: 500 }}>
           {health}
         </div>
       </header>
       
-      <div style={{ background: "#18181b", borderRadius: 8, padding: 16, marginBottom: 16, border: "1px solid #27272a" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-          <span style={{ color: "#a1a1aa", fontSize: 13 }}>Candidates</span>
-          <span style={{ fontWeight: 600 }}>{count}</span>
+      <div style={{ background: "#111113", borderRadius: 8, padding: "14px 16px", marginBottom: 16, border: "1px solid #1e1e21" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 13 }}>
+          <span style={{ color: "#71717a" }}>Candidates</span>
+          <span style={{ fontWeight: 600, color: "#fafafa" }}>{count}</span>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#a1a1aa", fontSize: 13 }}>Last Scan</span>
-          <span style={{ fontSize: 12, color: "#d4d4d8" }}>{lastScanAt ? new Date(lastScanAt).toLocaleTimeString() : "Never"}</span>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+          <span style={{ color: "#71717a" }}>Last Scan</span>
+          <span style={{ fontSize: 12, color: "#a1a1aa" }}>{lastScanAt ? new Date(lastScanAt).toLocaleTimeString() : "Never"}</span>
         </div>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <button
           onClick={openDashboard}
-          style={{ width: "100%", padding: "10px", borderRadius: 6, border: "1px solid #3f3f46", background: "#27272a", color: "#fafafa", cursor: "pointer", fontWeight: 500 }}
+          style={{ width: "100%", padding: "8px", borderRadius: 6, border: "none", background: "#fff", color: "#000", cursor: "pointer", fontWeight: 600, fontSize: 13, transition: "opacity 0.15s" }}
+          onMouseEnter={e => e.currentTarget.style.opacity = "0.9"}
+          onMouseLeave={e => e.currentTarget.style.opacity = "1"}
         >
           Open Dashboard
         </button>
         <button
           onClick={clearQueue}
-          style={{ width: "100%", padding: "10px", borderRadius: 6, border: "1px solid #7f1d1d", background: "#450a0a", color: "#fecaca", cursor: "pointer", fontWeight: 500 }}
+          style={{ width: "100%", padding: "8px", borderRadius: 6, border: "1px solid #27272a", background: "transparent", color: "#71717a", cursor: "pointer", fontWeight: 500, fontSize: 13, transition: "color 0.15s, border-color 0.15s" }}
+          onMouseEnter={e => { e.currentTarget.style.color = "#fafafa"; e.currentTarget.style.borderColor = "#3f3f46"; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "#71717a"; e.currentTarget.style.borderColor = "#27272a"; }}
         >
           Clear Queue
         </button>
       </div>
 
-      <p style={{ margin: "16px 0 0", color: "#71717a", fontSize: 11, textAlign: "center" }}>
-        {health.includes("Not on") ? "Navigate to chatgpt.com to use live scanner." : "Use floating button in page to scan."}
+      <p style={{ margin: "14px 0 0", color: "#3f3f46", fontSize: 11, textAlign: "center", lineHeight: 1.4 }}>
+        {health.includes("Not on") ? "Navigate to chatgpt.com to start scanning." : "Use the floating button in ChatGPT sidebar to scan."}
       </p>
     </main>
   );

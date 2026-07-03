@@ -1,5 +1,6 @@
 import { Selectors } from '@tidygpt/ui-automation';
 import { executeAction } from '@tidygpt/ui-automation';
+import { runAllProbes } from '@tidygpt/ui-automation';
 import type { ConversationCandidate } from '@tidygpt/shared';
 
 console.info("[TidyGPT] Content script loaded", location.href);
@@ -67,20 +68,64 @@ function discoverVisibleChats(): ConversationCandidate[] {
   return candidates;
 }
 
-async function saveCandidates(candidates: ConversationCandidate[]) {
-  const data = await chrome.storage.local.get(["tidygptCandidates"]);
-  const existing = (data.tidygptCandidates || []) as ConversationCandidate[];
-  const existingMap = new Map(existing.map(c => [c.id, c]));
+async function performDeepScan() {
+  const scrollContainer = document.querySelector(Selectors.Sidebar.ScrollContainer);
+  if (!scrollContainer) return discoverVisibleChats();
   
-  for (const c of candidates) {
-    if (!existingMap.has(c.id)) {
-      existingMap.set(c.id, c);
+  const candidates = new Map<string, ConversationCandidate>();
+  let lastHeight = 0;
+  
+  // Lazy scrolling scan
+  for (let i = 0; i < 20; i++) { // limit arbitrary deep scan depth for safety
+    const visible = discoverVisibleChats();
+    for (const c of visible) candidates.set(c.id, c);
+    
+    scrollContainer.scrollBy(0, 500);
+    await new Promise(r => setTimeout(r, 800));
+    
+    if (scrollContainer.scrollTop === lastHeight) break; // reached bottom
+    lastHeight = scrollContainer.scrollTop;
+  }
+  
+  return Array.from(candidates.values());
+}
+
+async function countMessagesInCurrentChat(): Promise<{ user: number, assistant: number, ok: boolean }> {
+  // Wait for stable DOM
+  let stableCount = 0;
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 200));
+    if (!document.querySelector(Selectors.Conversation.LoadingSkeleton)) {
+      stableCount++;
+      if (stableCount > 3) break;
+    } else {
+      stableCount = 0;
     }
   }
 
-  await chrome.storage.local.set({
-    tidygptCandidates: Array.from(existingMap.values()),
-    tidygptLastScanAt: new Date().toISOString()
+  const userMessages = document.querySelectorAll(Selectors.Conversation.UserMessage).length;
+  const assistantMessages = document.querySelectorAll(Selectors.Conversation.AssistantMessage).length;
+  
+  // Detect if generating
+  const isGenerating = !!document.querySelector(Selectors.Conversation.StopGeneratingButton);
+  return {
+    user: userMessages,
+    assistant: assistantMessages,
+    ok: !isGenerating && (userMessages > 0 || assistantMessages > 0)
+  };
+}
+
+async function saveCandidates(candidates: ConversationCandidate[]) {
+  // Send message to background script to save candidates to avoid chrome.storage permission issues in content script
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "SAVE_CANDIDATES", payload: candidates }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error("[TidyGPT] Error saving candidates:", chrome.runtime.lastError.message);
+        reject(chrome.runtime.lastError);
+      } else {
+        resolve(response);
+      }
+    });
   });
 }
 
@@ -110,8 +155,7 @@ function injectTidyGPTBadge() {
   badge.onclick = async () => {
     badge.textContent = "Scanning...";
     badge.style.opacity = "0.7";
-    // TODO: implement lazy scrolling here for deep scan if needed, for now just visible scan
-    const candidates = discoverVisibleChats();
+    const candidates = await performDeepScan();
     await saveCandidates(candidates);
     badge.textContent = `Found ${candidates.length}`;
     setTimeout(() => { badge.textContent = "TidyGPT Scan"; badge.style.opacity = "1"; }, 3000);
@@ -121,16 +165,31 @@ function injectTidyGPTBadge() {
 }
 
 injectTidyGPTBadge();
-
+let badgeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const observer = new MutationObserver(() => {
-  injectTidyGPTBadge();
+  if (badgeDebounceTimer) return;
+  badgeDebounceTimer = setTimeout(() => {
+    badgeDebounceTimer = null;
+    injectTidyGPTBadge();
+  }, 2000);
 });
-observer.observe(document.documentElement, { childList: true, subtree: true });
+observer.observe(document.body, { childList: true, subtree: false });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PING') {
     sendResponse({ ok: true });
     return;
+  }
+  
+  if (message.type === 'DIAGNOSTICS') {
+    const health = runAllProbes();
+    sendResponse({ ok: true, health, url: location.href });
+    return;
+  }
+  
+  if (message.type === 'COUNT_MESSAGES') {
+    countMessagesInCurrentChat().then(sendResponse);
+    return true;
   }
 
   if (message.type === 'EXECUTE_ACTION') {
@@ -140,6 +199,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }).catch(err => {
       sendResponse({ success: false, error: err.message });
     });
-    return true; // async response
+    return true; 
   }
 });

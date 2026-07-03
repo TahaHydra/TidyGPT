@@ -18,6 +18,6 @@ export type CustomRule = {
 };
 
 export type RulesConfig = {
-  builtInSettings: import('./job').CleanerSettings;
+  builtInSettings: import('./settings').CleanerSettings;
   customRules: CustomRule[];
 };

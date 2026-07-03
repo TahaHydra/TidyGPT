@@ -21,15 +21,22 @@ let dbPromise: Promise<IDBPDatabase<SweeperDB>> | null = null;
 
 export async function getDB() {
   if (!dbPromise) {
-    dbPromise = openDB<SweeperDB>('ChatSweeperDB', 2, {
+    dbPromise = openDB<SweeperDB>('ChatSweeperDB', 3, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
-          db.createObjectStore('jobs', { keyPath: 'id' });
+          db.createObjectStore('jobs', { keyPath: 'jobId' });
           db.createObjectStore('settings');
         }
         if (oldVersion < 2) {
           const logsStore = db.createObjectStore('logs', { keyPath: 'id' });
           logsStore.createIndex('by-job', 'jobId');
+        }
+        if (oldVersion < 3 && oldVersion >= 1) {
+          // Migration: only delete and recreate jobs if upgrading from v1/v2 (not fresh install)
+          if (db.objectStoreNames.contains('jobs')) {
+            db.deleteObjectStore('jobs');
+          }
+          db.createObjectStore('jobs', { keyPath: 'jobId' });
         }
       },
     });
@@ -40,6 +47,17 @@ export async function getDB() {
 export async function saveJob(job: CleanupJob) {
   const db = await getDB();
   await db.put('jobs', job);
+}
+
+export async function updateJob(jobId: string, updates: Partial<CleanupJob>) {
+  const db = await getDB();
+  const tx = db.transaction('jobs', 'readwrite');
+  const store = tx.objectStore('jobs');
+  const job = await store.get(jobId);
+  if (job) {
+    await store.put({ ...job, ...updates });
+  }
+  await tx.done;
 }
 
 export async function getJob(id: string): Promise<CleanupJob | undefined> {

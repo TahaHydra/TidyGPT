@@ -1,4 +1,5 @@
-import type { ConversationProvider, ProviderHealth, ConversationPage, ConversationFull, ConversationCandidate } from '@tidygpt/shared';
+import type { ConversationProvider, ProviderHealth, ConversationPage, ConversationFull, ConversationCandidate, CleanerSettings } from '@tidygpt/shared';
+import { calculateScore, classifyScore } from '@tidygpt/core';
 
 export class ExportProvider implements ConversationProvider {
   id = 'export_provider';
@@ -13,6 +14,11 @@ export class ExportProvider implements ConversationProvider {
   };
 
   private conversations: any[] = [];
+  private settings: CleanerSettings;
+
+  constructor(settings: CleanerSettings) {
+    this.settings = settings;
+  }
 
   async loadFromJSON(data: any[]) {
     this.conversations = data;
@@ -50,29 +56,53 @@ export class ExportProvider implements ConversationProvider {
     };
   }
 
-  // Returns fully populated candidates
   async generateCandidates(): Promise<ConversationCandidate[]> {
+    const titleCounts = new Map<string, number>();
+    
+    // First pass: count titles
+    for (const c of this.conversations) {
+      const title = c.title || 'Untitled';
+      titleCounts.set(title, (titleCounts.get(title) || 0) + 1);
+    }
+
     return this.conversations.map(c => {
       const messages = Object.values(c.mapping || {}).map((m: any) => m.message).filter(Boolean);
       let userMessages = 0;
       let assistantMessages = 0;
       let hasCode = false;
+      let hasFile = false;
+      let contentLength = 0;
+      const protectedMatches: string[] = [];
+      const title = c.title || 'Untitled';
 
       messages.forEach(m => {
         if (m.author?.role === 'user') userMessages++;
-        if (m.author?.role === 'assistant') {
-          assistantMessages++;
-          // rudimentary code block check in content
-          if (m.content?.parts?.some((p: any) => typeof p === 'string' && p.includes('```'))) {
-            hasCode = true;
+        if (m.author?.role === 'assistant') assistantMessages++;
+        
+        if (m.content?.parts) {
+          for (const p of m.content.parts) {
+            if (typeof p === 'string') {
+              contentLength += p.length;
+              if (p.includes('```')) hasCode = true;
+              
+              for (const keyword of this.settings.protectedKeywords) {
+                if (p.toLowerCase().includes(keyword.toLowerCase())) {
+                  protectedMatches.push(keyword);
+                }
+              }
+            } else if (p.content_type === 'image_asset_pointer' || p.content_type === 'file') {
+              hasFile = true;
+            }
           }
         }
       });
 
+      const duplicateTitle = (titleCounts.get(title) || 0) > 1 && title !== 'New chat';
+      
       const candidate: ConversationCandidate = {
         id: c.conversation_id || c.id,
         idHash: c.conversation_id || c.id,
-        title: c.title || 'Untitled',
+        title,
         url: `https://chatgpt.com/c/${c.conversation_id || c.id}`,
         source: "export",
         sourceConfidence: 1.0,
@@ -89,15 +119,15 @@ export class ExportProvider implements ConversationProvider {
           countConfidence: 1.0,
         },
         signals: {
-          genericTitle: c.title === 'New chat',
-          duplicateTitle: false, // Handle in batch later
+          genericTitle: title === 'New chat',
+          duplicateTitle,
           hasCode,
-          hasFile: "unknown",
+          hasFile,
           hasImage: "unknown",
           hasArtifact: "unknown",
           isProject: "unknown",
           isCurrentChat: false,
-          protectedKeywordMatches: [],
+          protectedKeywordMatches: Array.from(new Set(protectedMatches)),
         },
         score: {
           total: 0,
@@ -112,11 +142,17 @@ export class ExportProvider implements ConversationProvider {
           lowContentLength: 0,
           confidence: 1.0
         },
-        riskFlags: [],
+        riskFlags: protectedMatches.length > 0 ? ["protected_keyword"] : [],
         recommendation: "ignore",
         selectedAction: "none",
         status: "discovered"
       };
+      
+      candidate.contentLength = contentLength;
+
+      const score = calculateScore(candidate, this.settings);
+      candidate.score = score;
+      candidate.recommendation = classifyScore(score, this.settings, candidate.riskFlags);
       
       return candidate;
     });

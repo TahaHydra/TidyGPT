@@ -73,6 +73,8 @@ export type ConversationCandidate = {
 
   selectedAction: "none" | "archive" | "delete" | "archive_then_delete";
 
+  contentLength?: number;
+
   status:
     | "discovered"
     | "scanned"

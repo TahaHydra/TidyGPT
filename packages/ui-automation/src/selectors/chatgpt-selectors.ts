@@ -14,10 +14,18 @@ export const Selectors = {
   },
   Menu: {
     Trigger: 'button[aria-haspopup="menu"]',
-    ArchiveItem: 'menuitem[aria-label*="Archive"], div:contains("Archive")',
-    DeleteItem: 'menuitem[aria-label*="Delete"], div:contains("Delete")'
+    // We remove :contains because it's invalid for querySelector.
+    // Instead we rely on JS helper functions using these attributes or text fallbacks.
+    ArchiveAria: '[aria-label*="Archive"], [aria-label*="Archiver"]',
+    DeleteAria: '[aria-label*="Delete"], [aria-label*="Supprimer"]',
   },
   Modals: {
-    ConfirmDeleteButton: 'button.btn-danger, button:contains("Delete")'
+    ConfirmDeleteButton: 'button.btn-danger' // Often classes like this exist, otherwise JS text fallback
   }
+};
+
+export const TextFallbacks = {
+  Archive: ["Archive", "Archiver"],
+  Delete: ["Delete", "Supprimer", "Delete chat"],
+  ConfirmDelete: ["Delete", "Supprimer", "Confirm", "Confirmer"]
 };

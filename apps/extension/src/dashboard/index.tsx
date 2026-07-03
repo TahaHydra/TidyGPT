@@ -10,7 +10,16 @@ import { RulesTab } from "./components/RulesTab";
 import { LogsTab } from "./components/LogsTab";
 import type { ConversationCandidate } from "@tidygpt/shared";
 
-const TABS = ["Overview", "Scan", "Review", "Actions", "Rules", "Logs", "Settings", "Diagnostics"];
+const TABS = [
+  { id: "Overview", icon: "◉" },
+  { id: "Scan", icon: "⇣" },
+  { id: "Review", icon: "☰" },
+  { id: "Actions", icon: "▶" },
+  { id: "Rules", icon: "⚙" },
+  { id: "Logs", icon: "📋" },
+  { id: "Settings", icon: "⊞" },
+  { id: "Diagnostics", icon: "♺" },
+];
 
 function Dashboard() {
   const [activeTab, setActiveTab] = useState("Overview");
@@ -23,44 +32,67 @@ function Dashboard() {
 
   useEffect(() => {
     loadData();
-    // Listen for storage changes to update automatically
-    chrome.storage.onChanged.addListener((changes, area) => {
+    const listener = (changes: any, area: string) => {
       if (area === 'local' && changes.tidygptCandidates) {
         setCandidates(changes.tidygptCandidates.newValue || []);
       }
-    });
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#09090b", color: "#fafafa", fontFamily: "Inter, system-ui, sans-serif" }}>
-      <aside style={{ width: 240, background: "#18181b", borderRight: "1px solid #27272a", padding: "24px 0" }}>
-        <div style={{ padding: "0 24px", marginBottom: 32 }}>
-          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>TidyGPT</h1>
-          <p style={{ margin: 0, fontSize: 12, color: "#a1a1aa" }}>Local Organizer</p>
+      {/* Sidebar */}
+      <aside style={{ width: 220, minWidth: 220, background: "#111113", borderRight: "1px solid #1e1e21", padding: "20px 0", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "0 20px", marginBottom: 28 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 6, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "#fff" }}>T</div>
+            <div>
+              <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em" }}>TidyGPT</h1>
+              <p style={{ margin: 0, fontSize: 11, color: "#52525b", letterSpacing: "0.02em" }}>Local Organizer</p>
+            </div>
+          </div>
         </div>
-        <nav style={{ display: "flex", flexDirection: "column", gap: 4, padding: "0 12px" }}>
+        <nav style={{ display: "flex", flexDirection: "column", gap: 2, padding: "0 8px", flex: 1 }}>
           {TABS.map(tab => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
               style={{
-                textAlign: "left", padding: "8px 12px", borderRadius: 6, cursor: "pointer", border: "none",
-                background: activeTab === tab ? "#27272a" : "transparent",
-                color: activeTab === tab ? "#fafafa" : "#a1a1aa",
-                fontWeight: activeTab === tab ? 500 : 400
+                textAlign: "left",
+                padding: "7px 12px",
+                borderRadius: 6,
+                cursor: "pointer",
+                border: "none",
+                background: activeTab === tab.id ? "#1e1e21" : "transparent",
+                color: activeTab === tab.id ? "#fafafa" : "#71717a",
+                fontWeight: activeTab === tab.id ? 500 : 400,
+                fontSize: 13,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                transition: "background 0.15s, color 0.15s",
               }}
+              onMouseEnter={e => { if (activeTab !== tab.id) (e.currentTarget.style.background = "#18181b", e.currentTarget.style.color = "#a1a1aa"); }}
+              onMouseLeave={e => { if (activeTab !== tab.id) (e.currentTarget.style.background = "transparent", e.currentTarget.style.color = "#71717a"); }}
             >
-              {tab}
+              <span style={{ fontSize: 14, width: 18, textAlign: "center", opacity: activeTab === tab.id ? 1 : 0.6 }}>{tab.icon}</span>
+              {tab.id}
             </button>
           ))}
         </nav>
+        <div style={{ padding: "12px 20px", borderTop: "1px solid #1e1e21" }}>
+          <div style={{ fontSize: 11, color: "#3f3f46" }}>v1.0.0</div>
+        </div>
       </aside>
       
-      <main style={{ flex: 1, padding: "32px 48px", overflowY: "auto" }}>
+      {/* Main content */}
+      <main style={{ flex: 1, padding: "28px 40px", overflowY: "auto", maxHeight: "100vh" }}>
         {activeTab === "Overview" && <OverviewTab candidates={candidates} />}
         {activeTab === "Scan" && <ScanTab onRefresh={loadData} />}
         {activeTab === "Review" && <ReviewTab candidates={candidates} onUpdate={loadData} />}
-        {activeTab === "Actions" && <ActionsTab candidates={candidates} onUpdate={loadData} />}
+        {activeTab === "Actions" && <ActionsTab candidates={candidates} />}
         {activeTab === "Rules" && <RulesTab />}
         {activeTab === "Logs" && <LogsTab />}
         {activeTab === "Settings" && <SettingsTab />}
