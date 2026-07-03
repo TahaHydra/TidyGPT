@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "TidyGPT",
+  "version": "1.0.0",
+  "description": "Review, archive, and clean selected chat history on chatgpt.com.",
+  "permissions": ["storage", "scripting", "activeTab"],
+  "optional_host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "options_page": "dashboard.html",
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["assets/content.js"]
+    }
+  ]
+}

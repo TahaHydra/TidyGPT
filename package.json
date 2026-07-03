@@ -8,16 +8,17 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w @tidygpt/shared && npm run build -w @tidygpt/ui-automation && npm run build -w @tidygpt/storage && npm run build -w @tidygpt/core && npm run build -w @tidygpt/providers && npm run build -w @tidygpt/cli && npm run build -w @tidygpt/extension && npm run build -w @tidygpt/local-web",
     "dev": "npm run dev --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {
-    "typescript": "^5.3.0",
-    "vitest": "^1.1.0",
+    "@types/node": "^26.1.0",
+    "eslint": "^8.56.0",
     "prettier": "^3.1.0",
-    "eslint": "^8.56.0"
+    "typescript": "^5.3.0",
+    "vitest": "^1.1.0"
   }
 }
