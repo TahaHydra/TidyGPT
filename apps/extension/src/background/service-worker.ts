@@ -14,8 +14,21 @@ let activeJobId: string | null = null;
 let isPaused = false;
 let isCancelled = false;
 let contentScanRunning = false;
+let contentScanCancelled = false;
+let contentScanStopReason = '';
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+async function waitForContentScan(ms: number) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (contentScanCancelled) return false;
+    await wait(Math.min(500, until - Date.now()));
+  }
+  return !contentScanCancelled;
+}
+function isRetryableScanError(error: unknown) {
+  return /too many|rate.?limit|\b429\b|try again|temporar|timed out|no messages|failed to fetch/i.test(String((error as any)?.message || error));
+}
 const candidateKey = (candidate: ConversationCandidate) => candidate.providerKey ?? `${candidate.platform ?? 'chatgpt'}:${candidate.id}`;
 
 async function mergeCandidates(candidates: ConversationCandidate[]) {
@@ -61,6 +74,8 @@ async function waitForTab(tabId: number, expectedUrl?: string, timeoutMs = 30_00
 async function scanPlatformHistory(platform: PlatformId, candidates: ConversationCandidate[]) {
   if (contentScanRunning) throw new Error('A content scan is already running');
   contentScanRunning = true;
+  contentScanCancelled = false;
+  contentScanStopReason = '';
   let workerTabId: number | undefined;
   const settings = { ...defaultSettings, ...(await getSettings()) };
   const stored = await chrome.storage.local.get(['tidygptRules']);
@@ -77,22 +92,46 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
     const failures: string[] = [];
     const pendingUpdates: ConversationCandidate[] = [];
     for (let index = 0; index < candidates.length; index++) {
+      if (contentScanCancelled) break;
       const candidate = candidates[index];
       if (!candidate.url) continue;
       try {
-      if (!workerTabId) {
-        const tab = await chrome.tabs.create({ url: candidate.url, active: false });
-        workerTabId = tab.id;
-        if (!workerTabId) throw new Error('Could not create scanner tab');
-      } else {
-        await chrome.tabs.update(workerTabId, { url: candidate.url, active: false });
+      let response: any;
+      const maxRetries = Math.max(0, settings.contentScanMaxRetries ?? 3);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if (!workerTabId) {
+            const tab = await chrome.tabs.create({ url: candidate.url, active: false });
+            workerTabId = tab.id;
+            if (!workerTabId) throw new Error('Could not create scanner tab');
+          } else {
+            await chrome.tabs.update(workerTabId, { url: candidate.url, active: false });
+          }
+          await waitForTab(workerTabId, candidate.url);
+          response = await chrome.tabs.sendMessage(workerTabId, {
+            type: 'READ_CURRENT_CONVERSATION',
+            payload: { messageLimit: settings.contentScanMessageLimit ?? 20 },
+          });
+          if (!response?.ok) throw new Error(response?.error || `Could not read ${candidate.title}`);
+          break;
+        } catch (error) {
+          const retryable = isRetryableScanError(error);
+          if (retryable && attempt >= maxRetries) {
+            contentScanStopReason = 'Rate limit persisted after retries; scan stopped to protect the account';
+            contentScanCancelled = true;
+            throw error;
+          }
+          if (contentScanCancelled || !retryable) throw error;
+          const waitMs = Math.max(10_000, settings.contentScanRetryBaseMs ?? 30_000) * (2 ** attempt);
+          await chrome.storage.local.set({
+            tidygptScanProgress: {
+              platform, status: 'rate_limit_cooldown', completed: index, total: candidates.length,
+              currentTitle: candidate.title, retry: attempt + 1, maxRetries, waitMs, failures: failures.length,
+            },
+          });
+          if (!await waitForContentScan(waitMs)) throw new Error('Scan cancelled');
+        }
       }
-      await waitForTab(workerTabId, candidate.url);
-      const response = await chrome.tabs.sendMessage(workerTabId, {
-        type: 'READ_CURRENT_CONVERSATION',
-        payload: { messageLimit: settings.contentScanMessageLimit ?? 20 },
-      });
-      if (!response?.ok) throw new Error(response?.error || `Could not read ${candidate.title}`);
 
       const scanText: string = response.scanText ?? '';
       const fullText: string = (response.backup.messages as Array<{ text: string }>).map(message => message.text).join('\n');
@@ -153,6 +192,7 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
       await saveConversationBackup({ ...response.backup, title: candidate.title || response.backup.title });
       pendingUpdates.push(scanned);
       } catch (error: any) {
+        if (contentScanCancelled) break;
         failures.push(`${candidate.title || candidate.id}: ${error.message}`);
         pendingUpdates.push({
           ...candidate,
@@ -168,9 +208,28 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
       await chrome.storage.local.set({
         tidygptScanProgress: { platform, status: 'scanning', completed: index + 1, total: candidates.length, failures: failures.length },
       });
+      if (index < candidates.length - 1 && !contentScanCancelled) {
+        const minDelay = Math.max(1000, settings.contentScanDelayMinMs ?? 4000);
+        const maxDelay = Math.max(minDelay, settings.contentScanDelayMaxMs ?? 7000);
+        if (!await waitForContentScan(minDelay + Math.random() * (maxDelay - minDelay))) break;
+        const batchSize = Math.max(1, settings.contentScanBatchSize ?? 20);
+        if ((index + 1) % batchSize === 0) {
+          const cooldownMs = Math.max(0, settings.contentScanBatchCooldownMs ?? 30_000);
+          await chrome.storage.local.set({
+            tidygptScanProgress: {
+              platform, status: 'batch_cooldown', completed: index + 1, total: candidates.length,
+              waitMs: cooldownMs, failures: failures.length,
+            },
+          });
+          if (!await waitForContentScan(cooldownMs)) break;
+        }
+      }
     }
+    if (pendingUpdates.length) await mergeCandidates(pendingUpdates.splice(0));
     await chrome.storage.local.set({
-      tidygptScanProgress: { platform, status: failures.length ? 'completed_with_errors' : 'completed', completed: candidates.length, total: candidates.length, failures },
+      tidygptScanProgress: contentScanCancelled
+        ? { platform, status: contentScanStopReason ? 'rate_limited_stopped' : 'cancelled', error: contentScanStopReason || undefined, failures }
+        : { platform, status: failures.length ? 'completed_with_errors' : 'completed', completed: candidates.length, total: candidates.length, failures },
     });
   } catch (error: any) {
     await chrome.storage.local.set({
@@ -350,6 +409,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'START_CONTENT_SCAN') {
     if (contentScanRunning) { sendResponse({ ok: false, error: 'A content scan is already running' }); return false; }
     scanPlatformHistory(message.payload.platform, message.payload.candidates);
+    sendResponse({ ok: true }); return false;
+  }
+  if (message.type === 'CANCEL_CONTENT_SCAN') {
+    if (!contentScanRunning) { sendResponse({ ok: false, error: 'No content scan is running' }); return false; }
+    contentScanCancelled = true;
+    contentScanStopReason = '';
     sendResponse({ ok: true }); return false;
   }
   if (message.type === 'RUN_RULE_AUDIT') {

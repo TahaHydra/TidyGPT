@@ -31,6 +31,11 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
     saveSettings(next);
   }
 
+  async function stopContentScan() {
+    const response = await chrome.runtime.sendMessage({ type: 'CANCEL_CONTENT_SCAN' });
+    if (!response?.ok) alert(response?.error || 'Could not stop scan');
+  }
+
   async function processJSONFile(file: File) {
     setImporting(true);
     try {
@@ -102,7 +107,10 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ marginBottom: 18, padding: "12px 16px", background: "#111827", border: "1px solid #1e3a5f", borderRadius: 8, color: "#bfdbfe", fontSize: 13 }}>
           {progress.platform?.toUpperCase()} content scan: {progress.status}
           {typeof progress.total === 'number' && ` · ${progress.completed ?? 0}/${progress.total}`}
+          {progress.waitMs ? ` · waiting ${Math.ceil(progress.waitMs / 1000)}s` : ''}
+          {progress.retry ? ` · retry ${progress.retry}/${progress.maxRetries}` : ''}
           {progress.error && <span style={{ color: "#fca5a5" }}> · {progress.error}</span>}
+          {['scanning', 'rate_limit_cooldown', 'batch_cooldown'].includes(progress.status) && <button onClick={stopContentScan} style={{ marginLeft: 12, padding: '4px 9px', borderRadius: 4, border: '1px solid #7f1d1d', background: '#450a0a', color: '#fca5a5', cursor: 'pointer' }}>Stop scan</button>}
         </div>
       )}
       {discovery && (
@@ -111,6 +119,7 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
           {discovery.rounds ? ` · ${discovery.rounds} scroll steps` : ''}
           {discovery.bottomIdleRounds != null ? ` · bottom stable ${discovery.bottomIdleRounds}/${discovery.idleRounds}` : ''}
           {discovery.reason === 'maximum_reached' && <span style={{ color: '#fde68a' }}> · stopped at your configured maximum</span>}
+          {discovery.reason === 'scroll_page_limit_reached' && <span style={{ color: '#fde68a' }}> · stopped after {discovery.scrollPages} configured page scrolls</span>}
           {discovery.reason === 'sidebar_complete' && <span> · sidebar reached and stayed stable</span>}
         </div>
       )}
@@ -121,7 +130,7 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
           <div>
             <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>Live Multi-AI Scanner</h3>
             <p style={{ color: "#71717a", fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>
-              Open ChatGPT, Claude, or Gemini and click its floating TidyGPT button. Discovery follows the full virtualized sidebar, then a private inactive tab reads the first and last configured messages, classifies the real content, and stores a local pre-delete backup.
+              Open ChatGPT, Claude, or Gemini and click its floating TidyGPT button. Discovery scrolls the configured number of sidebar pages, then a private inactive tab reads conversations slowly with cooldowns and stores local pre-delete backups.
             </p>
           </div>
           <div style={{ padding: "12px 14px", background: "#18181b", borderRadius: 6, color: "#a1a1aa", fontSize: 12, border: "1px solid #27272a", textAlign: "center" }}>
@@ -132,13 +141,25 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ padding: 24, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21" }}>
           <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>How far should discovery scroll?</h3>
           <p style={{ color: "#71717a", fontSize: 12, lineHeight: 1.5, margin: "0 0 16px" }}>
-            Discovery is unlimited by default. It stops only after the sidebar is at the bottom and unchanged for several checks. Increase the wait for slow histories; set a maximum only when you intentionally want a partial audit.
+            The default is 5 sidebar page scrolls. Set page scrolls to 0 only when you intentionally want unlimited discovery.
           </p>
           <div style={{ display: 'grid', gap: 12 }}>
+            <ScanField label="Maximum sidebar page scrolls (0 = unlimited)" value={settings.deepScanMaxScrollPages ?? 5} min={0} max={10000} onChange={value => updateScanSettings({ deepScanMaxScrollPages: value })} />
             <ScanField label="Maximum conversations (0 = unlimited)" value={settings.deepScanMaxConversations ?? 0} min={0} max={100000} onChange={value => updateScanSettings({ deepScanMaxConversations: value })} />
             <ScanField label="Stable checks at the bottom" value={settings.deepScanIdleRounds ?? 10} min={2} max={50} onChange={value => updateScanSettings({ deepScanIdleRounds: value })} />
             <ScanField label="Wait after each scroll (milliseconds)" value={settings.deepScanStepDelayMs ?? 650} min={250} max={5000} step={50} onChange={value => updateScanSettings({ deepScanStepDelayMs: value })} />
             <ScanField label="Messages read from first + last" value={settings.contentScanMessageLimit ?? 20} min={1} max={100} onChange={value => updateScanSettings({ contentScanMessageLimit: value })} />
+          </div>
+        </div>
+
+        <div style={{ padding: 24, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21" }}>
+          <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>Request pacing</h3>
+          <p style={{ color: "#71717a", fontSize: 12, lineHeight: 1.5, margin: "0 0 16px" }}>These conservative defaults prevent “too many requests” warnings. Rate-limit pages trigger automatic 30s, 60s, then 120s retries.</p>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <ScanField label="Minimum delay between conversations (seconds)" value={(settings.contentScanDelayMinMs ?? 4000) / 1000} min={1} max={120} onChange={value => updateScanSettings({ contentScanDelayMinMs: value * 1000 })} />
+            <ScanField label="Maximum delay between conversations (seconds)" value={(settings.contentScanDelayMaxMs ?? 7000) / 1000} min={1} max={120} onChange={value => updateScanSettings({ contentScanDelayMaxMs: value * 1000 })} />
+            <ScanField label="Conversations per batch" value={settings.contentScanBatchSize ?? 20} min={1} max={100} onChange={value => updateScanSettings({ contentScanBatchSize: value })} />
+            <ScanField label="Cooldown after each batch (seconds)" value={(settings.contentScanBatchCooldownMs ?? 30000) / 1000} min={0} max={600} onChange={value => updateScanSettings({ contentScanBatchCooldownMs: value * 1000 })} />
           </div>
         </div>
 

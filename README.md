@@ -29,7 +29,7 @@ npm run build
 
 Load `apps/extension/dist` as an unpacked extension from the browser's extension management page. Open ChatGPT, Claude, or Gemini. The floating controls provide both **Scan** and **TidyGPT Dashboard** buttons, and the dashboard is also available from the extension popup.
 
-The scan first walks the history list, then reads conversations sequentially in one inactive temporary tab. Discovery is unlimited by default and stops only after the sidebar reaches the bottom and stays unchanged for the configured number of checks. The Scan page shows the discovered count, scroll steps, completion reason, configurable delay, and optional maximum. Keep the relevant AI account signed in until the scan completes.
+The scan first walks the history list, then reads conversations sequentially in one inactive temporary tab. Discovery defaults to 5 sidebar page scrolls; set the value to `0` for unlimited discovery. The Scan page shows the discovered count, scroll steps, completion reason, and optional limits. Conversation reading waits a randomized 4–7 seconds between pages, pauses for 30 seconds after each 20-conversation batch, and backs off exponentially when a site reports rate limiting. Keep the relevant AI account signed in until the scan completes.
 
 The intended workflow is **Scan → Rules & audit → Review → Run safely**. Rules only stage actions; they never execute them. Global protections and permanent Keep/Important decisions override cleanup rules. Review the audit before execution, and keep backup-before-delete enabled.
 

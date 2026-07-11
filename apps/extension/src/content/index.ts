@@ -67,7 +67,7 @@ async function reportDiscovery(payload: Record<string, unknown>) {
   catch { /* Dashboard progress is helpful but must never stop discovery. */ }
 }
 
-async function performDeepScan(idleRounds = 10, stepDelayMs = 650, maxConversations = 0) {
+async function performDeepScan(idleRounds = 10, stepDelayMs = 650, maxConversations = 0, maxScrollPages = 5) {
   const scrollContainer = findScrollContainer();
   if (!scrollContainer) return discoverVisibleChats();
 
@@ -76,9 +76,10 @@ async function performDeepScan(idleRounds = 10, stepDelayMs = 650, maxConversati
   let unchangedRounds = 0;
   let previousHeight = -1;
   let rounds = 0;
+  let scrollPages = 0;
   scrollContainer.scrollTop = 0;
   await wait(300);
-  await reportDiscovery({ status: 'discovering', found: 0, rounds: 0, idleRounds, maxConversations });
+  await reportDiscovery({ status: 'discovering', found: 0, rounds: 0, scrollPages: 0, idleRounds, maxConversations, maxScrollPages });
 
   // Completion is based on repeated no-progress observations, not a history-size cap.
   for (let guard = 0; guard < 10_000 && unchangedRounds < Math.max(2, idleRounds); guard++) {
@@ -86,11 +87,13 @@ async function performDeepScan(idleRounds = 10, stepDelayMs = 650, maxConversati
     const before = candidates.size;
     for (const candidate of discoverVisibleChats()) candidates.set(candidate.providerKey!, candidate);
     if (maxConversations > 0 && candidates.size >= maxConversations) break;
+    if (maxScrollPages > 0 && scrollPages >= maxScrollPages) break;
 
     const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
     const nextTop = Math.min(maxTop, scrollContainer.scrollTop + Math.max(240, scrollContainer.clientHeight * 0.6));
     scrollContainer.scrollTop = nextTop;
     scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+    scrollPages++;
     await wait(Math.max(250, stepDelayMs));
 
     const atBottom = scrollContainer.scrollTop >= maxTop;
@@ -99,7 +102,7 @@ async function performDeepScan(idleRounds = 10, stepDelayMs = 650, maxConversati
     // bottom. Normal virtualized scrolling cannot end discovery early.
     unchangedRounds = atBottom && !listChanged ? unchangedRounds + 1 : 0;
     if (guard % 3 === 0 || atBottom) {
-      await reportDiscovery({ status: 'discovering', found: candidates.size, rounds, bottomIdleRounds: unchangedRounds, idleRounds, maxConversations });
+      await reportDiscovery({ status: 'discovering', found: candidates.size, rounds, scrollPages, bottomIdleRounds: unchangedRounds, idleRounds, maxConversations, maxScrollPages });
     }
     previousHeight = scrollContainer.scrollHeight;
   }
@@ -116,24 +119,37 @@ async function performDeepScan(idleRounds = 10, stepDelayMs = 650, maxConversati
   }
   const result = Array.from(candidates.values()).slice(0, maxConversations > 0 ? maxConversations : undefined);
   await reportDiscovery({
-    status: 'discovered', found: result.length, rounds,
-    reason: maxConversations > 0 && result.length >= maxConversations ? 'maximum_reached' : 'sidebar_complete',
+    status: 'discovered', found: result.length, rounds, scrollPages,
+    reason: maxConversations > 0 && result.length >= maxConversations ? 'maximum_reached'
+      : maxScrollPages > 0 && scrollPages >= maxScrollPages ? 'scroll_page_limit_reached' : 'sidebar_complete',
   });
   return result;
 }
 
 async function waitForConversation() {
-  if (!adapter) return;
+  if (!adapter) return false;
   let stable = 0;
   let previousCount = -1;
   for (let attempt = 0; attempt < 80; attempt++) {
     const count = document.querySelectorAll(adapter.messageRoots).length;
+    if (count === 0 && attempt % 4 === 0) {
+      const pageError = detectConversationLoadError();
+      if (pageError) throw new Error(pageError);
+    }
     const busy = !!document.querySelector(adapter.loading) || !!document.querySelector(adapter.generating);
     stable = !busy && count > 0 && count === previousCount ? stable + 1 : 0;
-    if (stable >= 3) return;
+    if (stable >= 3) return true;
     previousCount = count;
     await wait(250);
   }
+  return false;
+}
+
+function detectConversationLoadError() {
+  const text = (document.body?.innerText || '').slice(0, 20_000);
+  if (/too many requests|rate limit|try again later|error 429/i.test(text)) return 'Rate limited by the AI site (too many requests)';
+  if (/temporarily unavailable|something went wrong|failed to load/i.test(text)) return 'Conversation page is temporarily unavailable';
+  return '';
 }
 
 function extractMessages(): ConversationBackup['messages'] {
@@ -160,10 +176,13 @@ function extractMessages(): ConversationBackup['messages'] {
 
 async function readCurrentConversation(messageLimit = 20) {
   if (!adapter || !platform) throw new Error('Unsupported platform');
-  await waitForConversation();
+  const loaded = await waitForConversation();
   const id = adapter.conversationPath.exec(location.pathname)?.[1];
   if (!id) throw new Error('This is not a conversation URL');
   const messages = extractMessages();
+  if (!loaded || messages.length === 0) {
+    throw new Error(detectConversationLoadError() || 'No messages loaded from this conversation');
+  }
   const limit = Math.max(1, messageLimit);
   const sampled = messages.length <= limit * 2
     ? messages
@@ -227,6 +246,7 @@ function injectTidyGPTBadge() {
         settings?.deepScanIdleRounds ?? 10,
         settings?.deepScanStepDelayMs ?? 650,
         settings?.deepScanMaxConversations ?? 0,
+        settings?.deepScanMaxScrollPages ?? 5,
       );
       await saveCandidates(candidates);
       badge.textContent = `Reading ${candidates.length} chats…`;

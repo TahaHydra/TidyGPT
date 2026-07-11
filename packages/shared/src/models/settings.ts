@@ -17,8 +17,16 @@ export type CleanerSettings = {
 
   // Live content scan
   contentScanMessageLimit?: number;
+  contentScanDelayMinMs?: number;
+  contentScanDelayMaxMs?: number;
+  contentScanBatchSize?: number;
+  contentScanBatchCooldownMs?: number;
+  contentScanMaxRetries?: number;
+  contentScanRetryBaseMs?: number;
   deepScanIdleRounds?: number;
   deepScanStepDelayMs?: number;
+  /** Maximum viewport-sized sidebar scroll steps. Zero means unlimited. */
+  deepScanMaxScrollPages?: number;
   /** Zero means unlimited. */
   deepScanMaxConversations?: number;
   backupBeforeDelete?: boolean;
@@ -45,8 +53,15 @@ export const defaultSettings: CleanerSettings = {
   projectBehavior: "block",
   protectedKeywords: [],
   contentScanMessageLimit: 20,
+  contentScanDelayMinMs: 4000,
+  contentScanDelayMaxMs: 7000,
+  contentScanBatchSize: 20,
+  contentScanBatchCooldownMs: 30000,
+  contentScanMaxRetries: 3,
+  contentScanRetryBaseMs: 30000,
   deepScanIdleRounds: 10,
   deepScanStepDelayMs: 650,
+  deepScanMaxScrollPages: 5,
   deepScanMaxConversations: 0,
   backupBeforeDelete: true,
   minSelectorConfidence: 0.8,

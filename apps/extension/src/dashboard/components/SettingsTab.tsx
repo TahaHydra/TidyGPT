@@ -17,7 +17,8 @@ export function SettingsTab() {
     <h2 style={{ fontSize: 22, margin: '0 0 6px' }}>Advanced settings</h2>
     <p style={{ color: '#71717a', fontSize: 13, margin: '0 0 20px' }}>Normal cleanup choices live in Rules & audit. These controls tune scanning reliability and execution safety.</p>
     <div style={{ display: 'grid', gap: 14 }}>
-      <div style={section}><h3 style={{ margin: '0 0 6px', fontSize: 14 }}>Sidebar discovery</h3><p style={{ color: '#71717a', fontSize: 12, margin: '0 0 14px' }}>Zero maximum means unlimited. The scanner stops only after reaching a stable bottom.</p><div style={{ display: 'grid', gap: 11 }}>
+      <div style={section}><h3 style={{ margin: '0 0 6px', fontSize: 14 }}>Sidebar discovery</h3><p style={{ color: '#71717a', fontSize: 12, margin: '0 0 14px' }}>The safe default is 5 sidebar page scrolls. Zero means unlimited.</p><div style={{ display: 'grid', gap: 11 }}>
+        <NumberRow label="Maximum sidebar page scrolls (0 = unlimited)" value={settings.deepScanMaxScrollPages ?? 5} min={0} max={10000} onChange={value => update({ deepScanMaxScrollPages: value })} />
         <NumberRow label="Maximum conversations (0 = unlimited)" value={settings.deepScanMaxConversations ?? 0} min={0} max={100000} onChange={value => update({ deepScanMaxConversations: value })} />
         <NumberRow label="Stable bottom checks" value={settings.deepScanIdleRounds ?? 10} min={2} max={50} onChange={value => update({ deepScanIdleRounds: value })} />
         <NumberRow label="Scroll wait in milliseconds" value={settings.deepScanStepDelayMs ?? 650} min={250} max={5000} onChange={value => update({ deepScanStepDelayMs: value })} />
