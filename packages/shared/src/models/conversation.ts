@@ -15,7 +15,19 @@ export type RiskFlag =
   | "is_project"
   | "has_files"
   | "has_code"
+  | "has_image"
+  | "has_artifact"
   | "unknown_state";
+
+export type SavedConversationDecision = {
+  providerKey: string;
+  platform: PlatformId;
+  id: string;
+  title?: string;
+  url?: string;
+  decision: "keep" | "important";
+  createdAt: string;
+};
 
 
 export type CandidateScore = {
@@ -81,6 +93,10 @@ export type ConversationCandidate = {
   contentLength?: number;
   contentScannedAt?: string;
   backupAvailable?: boolean;
+  /** A user decision persists across future scans and always blocks cleanup. */
+  userDecision?: "keep" | "important";
+  matchedRuleIds?: string[];
+  matchedRuleNames?: string[];
 
   status:
     | "discovered"

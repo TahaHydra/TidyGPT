@@ -1,22 +1,35 @@
 import { useEffect, useState } from "react";
 import { ExportProvider } from "@tidygpt/providers";
-import type { ConversationCandidate } from "@tidygpt/shared";
+import type { CleanerSettings, ConversationCandidate } from "@tidygpt/shared";
 import { defaultSettings } from "@tidygpt/shared";
-import { getSettings } from "@tidygpt/storage";
+import { getSettings, saveConversationBackup, saveSettings } from "@tidygpt/storage";
 
 export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
   const [importing, setImporting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [progress, setProgress] = useState<any>(null);
+  const [discovery, setDiscovery] = useState<any>(null);
+  const [settings, setSettings] = useState<CleanerSettings>(defaultSettings);
 
   useEffect(() => {
-    chrome.storage.local.get(['tidygptScanProgress']).then(data => setProgress(data.tidygptScanProgress));
+    chrome.storage.local.get(['tidygptScanProgress', 'tidygptDiscoveryProgress']).then(data => {
+      setProgress(data.tidygptScanProgress);
+      setDiscovery(data.tidygptDiscoveryProgress);
+    });
+    getSettings().then(value => setSettings({ ...defaultSettings, ...value }));
     const listener = (changes: any, area: string) => {
       if (area === 'local' && changes.tidygptScanProgress) setProgress(changes.tidygptScanProgress.newValue);
+      if (area === 'local' && changes.tidygptDiscoveryProgress) setDiscovery(changes.tidygptDiscoveryProgress.newValue);
     };
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
+
+  function updateScanSettings(updates: Partial<CleanerSettings>) {
+    const next = { ...settings, ...updates };
+    setSettings(next);
+    saveSettings(next);
+  }
 
   async function processJSONFile(file: File) {
     setImporting(true);
@@ -29,6 +42,9 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
       await provider.loadFromJSON(json);
       
       const candidates = await provider.generateCandidates();
+      const backups = await provider.generateBackups();
+      await Promise.all(backups.map(backup => saveConversationBackup(backup)));
+      for (const candidate of candidates) candidate.backupAvailable = true;
 
       // Merge into storage
       const data = await chrome.storage.local.get(["tidygptCandidates"]);
@@ -89,6 +105,15 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
           {progress.error && <span style={{ color: "#fca5a5" }}> · {progress.error}</span>}
         </div>
       )}
+      {discovery && (
+        <div style={{ marginBottom: 18, padding: "12px 16px", background: "#102018", border: "1px solid #14532d", borderRadius: 8, color: "#bbf7d0", fontSize: 13 }}>
+          Sidebar discovery: <strong>{discovery.found ?? 0} found</strong> · {discovery.status}
+          {discovery.rounds ? ` · ${discovery.rounds} scroll steps` : ''}
+          {discovery.bottomIdleRounds != null ? ` · bottom stable ${discovery.bottomIdleRounds}/${discovery.idleRounds}` : ''}
+          {discovery.reason === 'maximum_reached' && <span style={{ color: '#fde68a' }}> · stopped at your configured maximum</span>}
+          {discovery.reason === 'sidebar_complete' && <span> · sidebar reached and stayed stable</span>}
+        </div>
+      )}
       <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
         
         {/* Live UI Scanner */}
@@ -101,6 +126,19 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
           </div>
           <div style={{ padding: "12px 14px", background: "#18181b", borderRadius: 6, color: "#a1a1aa", fontSize: 12, border: "1px solid #27272a", textAlign: "center" }}>
             ChatGPT · Claude · Gemini
+          </div>
+        </div>
+
+        <div style={{ padding: 24, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21" }}>
+          <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>How far should discovery scroll?</h3>
+          <p style={{ color: "#71717a", fontSize: 12, lineHeight: 1.5, margin: "0 0 16px" }}>
+            Discovery is unlimited by default. It stops only after the sidebar is at the bottom and unchanged for several checks. Increase the wait for slow histories; set a maximum only when you intentionally want a partial audit.
+          </p>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <ScanField label="Maximum conversations (0 = unlimited)" value={settings.deepScanMaxConversations ?? 0} min={0} max={100000} onChange={value => updateScanSettings({ deepScanMaxConversations: value })} />
+            <ScanField label="Stable checks at the bottom" value={settings.deepScanIdleRounds ?? 10} min={2} max={50} onChange={value => updateScanSettings({ deepScanIdleRounds: value })} />
+            <ScanField label="Wait after each scroll (milliseconds)" value={settings.deepScanStepDelayMs ?? 650} min={250} max={5000} step={50} onChange={value => updateScanSettings({ deepScanStepDelayMs: value })} />
+            <ScanField label="Messages read from first + last" value={settings.contentScanMessageLimit ?? 20} min={1} max={100} onChange={value => updateScanSettings({ contentScanMessageLimit: value })} />
           </div>
         </div>
 
@@ -148,5 +186,15 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
         
       </div>
     </div>
+  );
+}
+
+function ScanField({ label, value, min, max, step = 1, onChange }: { label: string; value: number; min: number; max: number; step?: number; onChange: (value: number) => void }) {
+  return (
+    <label style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center', color: '#d4d4d8', fontSize: 13 }}>
+      <span>{label}</span>
+      <input type="number" value={value} min={min} max={max} step={step} onChange={event => onChange(Number(event.target.value))}
+        style={{ width: 92, padding: '6px 8px', background: '#09090b', color: '#fff', border: '1px solid #27272a', borderRadius: 5, textAlign: 'right' }} />
+    </label>
   );
 }

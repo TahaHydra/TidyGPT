@@ -10,6 +10,7 @@ describe('Score Engine', () => {
     olderThanDays: 30,
     codeBehavior: "warn",
     fileBehavior: "block",
+    imageBehavior: "warn",
     projectBehavior: "block",
     protectedKeywords: ["secret"],
     minSelectorConfidence: 0.8,
@@ -86,6 +87,31 @@ describe('Score Engine', () => {
         customRules: [{ id: 'bad', name: 'Bad regex', type: 'delete', conditions: { bodyRegex: '[' } }],
       },
       'content'
+    );
+    expect(result).toBe('none');
+  });
+
+  it('lets protection win even when an earlier delete rule matches', () => {
+    const result = evaluateRules(
+      { counts: { totalMessages: 2, countConfidence: 1 }, title: 'Important client plan' },
+      {
+        builtInSettings: defaultSettings,
+        customRules: [
+          { id: 'short', name: 'Delete short', type: 'delete', conditions: { maxTotalMessages: 20 } },
+          { id: 'client', name: 'Protect client', type: 'keep', conditions: { titleContains: 'client' } },
+        ],
+      },
+    );
+    expect(result).toBe('keep');
+  });
+
+  it('does not treat unknown file detection as no files', () => {
+    const result = evaluateRules(
+      { signals: { hasFile: 'unknown' } as any },
+      {
+        builtInSettings: defaultSettings,
+        customRules: [{ id: 'empty', name: 'No files', type: 'delete', conditions: { noFiles: true } }],
+      },
     );
     expect(result).toBe('none');
   });

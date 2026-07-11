@@ -1,4 +1,4 @@
-import type { ConversationProvider, ProviderHealth, ConversationPage, ConversationFull, ConversationCandidate, CleanerSettings } from '@tidygpt/shared';
+import type { ConversationProvider, ProviderHealth, ConversationPage, ConversationFull, ConversationCandidate, CleanerSettings, ConversationBackup } from '@tidygpt/shared';
 import { calculateScore, classifyScore } from '@tidygpt/core';
 
 export class ExportProvider implements ConversationProvider {
@@ -71,6 +71,7 @@ export class ExportProvider implements ConversationProvider {
       let assistantMessages = 0;
       let hasCode = false;
       let hasFile = false;
+      let hasImage = false;
       let contentLength = 0;
       const protectedMatches: string[] = [];
       const title = c.title || 'Untitled';
@@ -90,7 +91,9 @@ export class ExportProvider implements ConversationProvider {
                   protectedMatches.push(keyword);
                 }
               }
-            } else if (p.content_type === 'image_asset_pointer' || p.content_type === 'file') {
+            } else if (p?.content_type === 'image_asset_pointer') {
+              hasImage = true;
+            } else if (p?.content_type === 'file') {
               hasFile = true;
             }
           }
@@ -125,7 +128,7 @@ export class ExportProvider implements ConversationProvider {
           duplicateTitle,
           hasCode,
           hasFile,
-          hasImage: "unknown",
+          hasImage,
           hasArtifact: "unknown",
           isProject: "unknown",
           isCurrentChat: false,
@@ -144,7 +147,12 @@ export class ExportProvider implements ConversationProvider {
           lowContentLength: 0,
           confidence: 1.0
         },
-        riskFlags: protectedMatches.length > 0 ? ["protected_keyword"] : [],
+        riskFlags: [
+          ...(protectedMatches.length > 0 ? ['protected_keyword' as const] : []),
+          ...(hasCode ? ['has_code' as const] : []),
+          ...(hasFile ? ['has_files' as const] : []),
+          ...(hasImage ? ['has_image' as const] : []),
+        ],
         recommendation: "ignore",
         selectedAction: "none",
         status: "discovered"
@@ -158,6 +166,36 @@ export class ExportProvider implements ConversationProvider {
       candidate.recommendation = classifyScore(score, this.settings, candidate.riskFlags);
       
       return candidate;
+    });
+  }
+
+  async generateBackups(): Promise<ConversationBackup[]> {
+    return this.conversations.map(conversation => {
+      const id = conversation.conversation_id || conversation.id;
+      const rawMessages = Object.values(conversation.mapping || {})
+        .map((node: any) => node.message)
+        .filter(Boolean)
+        .sort((a: any, b: any) => (a.create_time || 0) - (b.create_time || 0));
+      const messages = rawMessages.flatMap((message: any) => {
+        const text = (message.content?.parts || []).flatMap((part: any) => {
+          if (typeof part === 'string') return [part];
+          if (typeof part?.text === 'string') return [part.text];
+          return [];
+        }).join('\n').trim();
+        if (!text) return [];
+        const rawRole = message.author?.role;
+        const role: 'user' | 'assistant' | 'unknown' = rawRole === 'user' || rawRole === 'assistant' ? rawRole : 'unknown';
+        return [{ role, text }];
+      });
+      return {
+        providerKey: `chatgpt:${id}`,
+        platform: 'chatgpt' as const,
+        id,
+        title: conversation.title || 'Untitled',
+        url: `https://chatgpt.com/c/${id}`,
+        capturedAt: new Date().toISOString(),
+        messages,
+      };
     });
   }
 }

@@ -11,14 +11,14 @@ import { LogsTab } from "./components/LogsTab";
 import type { ConversationCandidate } from "@tidygpt/shared";
 
 const TABS = [
-  { id: "Overview", icon: "◉" },
-  { id: "Scan", icon: "⇣" },
-  { id: "Review", icon: "☰" },
-  { id: "Actions", icon: "▶" },
-  { id: "Rules", icon: "⚙" },
-  { id: "Logs", icon: "📋" },
-  { id: "Settings", icon: "⊞" },
-  { id: "Diagnostics", icon: "♺" },
+  { id: "Overview", label: "Overview", icon: "◉" },
+  { id: "Scan", label: "1. Scan", icon: "⇣" },
+  { id: "Rules", label: "2. Rules & audit", icon: "⚙" },
+  { id: "Review", label: "3. Review", icon: "☰" },
+  { id: "Actions", label: "4. Run safely", icon: "▶" },
+  { id: "Logs", label: "History & logs", icon: "📋" },
+  { id: "Settings", label: "Advanced settings", icon: "⊞" },
+  { id: "Diagnostics", label: "Diagnostics", icon: "♺" },
 ];
 
 function Dashboard() {
@@ -78,12 +78,12 @@ function Dashboard() {
               onMouseLeave={e => { if (activeTab !== tab.id) (e.currentTarget.style.background = "transparent", e.currentTarget.style.color = "#71717a"); }}
             >
               <span style={{ fontSize: 14, width: 18, textAlign: "center", opacity: activeTab === tab.id ? 1 : 0.6 }}>{tab.icon}</span>
-              {tab.id}
+              {tab.label}
             </button>
           ))}
         </nav>
         <div style={{ padding: "12px 20px", borderTop: "1px solid #1e1e21" }}>
-          <div style={{ fontSize: 11, color: "#3f3f46" }}>v1.0.0</div>
+          <div style={{ fontSize: 11, color: "#3f3f46" }}>v2.1.0 · private & local</div>
         </div>
       </aside>
       
@@ -93,7 +93,7 @@ function Dashboard() {
         {activeTab === "Scan" && <ScanTab onRefresh={loadData} />}
         {activeTab === "Review" && <ReviewTab candidates={candidates} onUpdate={loadData} />}
         {activeTab === "Actions" && <ActionsTab candidates={candidates} />}
-        {activeTab === "Rules" && <RulesTab />}
+        {activeTab === "Rules" && <RulesTab onAuditComplete={loadData} />}
         {activeTab === "Logs" && <LogsTab />}
         {activeTab === "Settings" && <SettingsTab />}
         {activeTab === "Diagnostics" && <DiagnosticsTab />}

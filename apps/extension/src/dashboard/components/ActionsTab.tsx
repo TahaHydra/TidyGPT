@@ -9,16 +9,18 @@ export function ActionsTab({ candidates }: { candidates: ConversationCandidate[]
   const [error, setError] = useState("");
   const [dryRunReport, setDryRunReport] = useState<any>(null);
   const [settings, setSettings] = useState<CleanerSettings>(defaultSettings);
+  const [auditSummary, setAuditSummary] = useState<any>(null);
 
   useEffect(() => {
-    getSettings().then(s => {
-      if (s) setSettings(s);
-    });
+    getSettings().then(s => setSettings({ ...defaultSettings, ...s }));
+    chrome.storage.local.get(['tidygptAuditSummary']).then(data => setAuditSummary(data.tidygptAuditSummary || null));
   }, []);
 
-  const pendingArchive = candidates.filter(c => c.selectedAction === 'archive');
-  const pendingDelete = candidates.filter(c => c.selectedAction === 'delete');
-  const pendingBoth = candidates.filter(c => c.selectedAction === 'archive_then_delete');
+  const safeCandidates = candidates.filter(c => !c.userDecision && c.recommendation !== 'protected');
+  const pendingArchive = safeCandidates.filter(c => c.selectedAction === 'archive');
+  const pendingDelete = safeCandidates.filter(c => c.selectedAction === 'delete');
+  const pendingBoth = safeCandidates.filter(c => c.selectedAction === 'archive_then_delete');
+  const blockedStaged = candidates.filter(c => c.selectedAction !== 'none' && (c.userDecision || c.recommendation === 'protected'));
 
   const totalActions = pendingArchive.length + pendingDelete.length + pendingBoth.length;
   
@@ -115,14 +117,18 @@ export function ActionsTab({ candidates }: { candidates: ConversationCandidate[]
         setRunning(false);
       } else {
         setRunning(false);
-        alert("Execution started in background. Monitor progress in Logs.");
+        alert("Execution started in background. Every success, failure, and skip is recorded in History & logs.");
       }
     });
   };
 
   return (
     <div>
-      <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 20px", letterSpacing: "-0.01em" }}>Execution Plan</h2>
+      <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 6px", letterSpacing: "-0.01em" }}>4. Run the approved plan</h2>
+      <p style={{ color: '#71717a', fontSize: 13, margin: '0 0 20px' }}>Only actions staged by your audit or manual Review choices appear here. Protected items are blocked again at execution time.</p>
+
+      {auditSummary && <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 7, background: '#111827', border: '1px solid #1e3a8a', color: '#bfdbfe', fontSize: 12 }}>Latest audit: {auditSummary.total} checked · {auditSummary.archive} archive · {auditSummary.delete} delete · {auditSummary.protected} protected</div>}
+      {blockedStaged.length > 0 && <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 7, background: '#1c1910', border: '1px solid #713f12', color: '#fde68a', fontSize: 12 }}>{blockedStaged.length} stale staged action(s) are now protected and will not run.</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
         <div style={{ background: "#111113", padding: 20, borderRadius: 8, border: "1px solid #1e1e21" }}>

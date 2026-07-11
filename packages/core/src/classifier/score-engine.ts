@@ -42,6 +42,10 @@ export function calculateScore(candidate: Partial<ConversationCandidate>, settin
     if (settings.codeBehavior === 'block') score -= 40;
     else if (settings.codeBehavior === 'warn') score -= 10;
   }
+  if (candidate.signals?.hasImage === true) {
+    if (settings.imageBehavior === 'block') score -= 60;
+    else if (settings.imageBehavior === 'warn') score -= 15;
+  }
 
   const confidenceScore = candidate.sourceConfidence || 0;
   if (confidenceScore < settings.minSelectorConfidence) {
@@ -80,6 +84,10 @@ export function classifyScore(
   if (score.confidence < settings.minSelectorConfidence) return "uncertain";
   if (score.noProtectedKeyword === -100 || riskFlags.includes("protected_keyword")) return "protected";
   if (riskFlags.includes("current_chat")) return "protected";
+  if (settings.fileBehavior === 'block' && riskFlags.includes('has_files')) return 'protected';
+  if (settings.codeBehavior === 'block' && riskFlags.includes('has_code')) return 'protected';
+  if (settings.imageBehavior === 'block' && riskFlags.includes('has_image')) return 'protected';
+  if (settings.projectBehavior === 'block' && (riskFlags.includes('is_project') || riskFlags.includes('has_artifact'))) return 'protected';
   
   if (ruleOverride === "keep") return "protected";
   if (ruleOverride === "delete") return "delete_candidate";

@@ -1,228 +1,174 @@
-import { useState, useMemo } from "react";
-import type { ConversationCandidate } from "@tidygpt/shared";
+import { useEffect, useMemo, useState } from 'react';
+import type { ConversationCandidate, SavedConversationDecision } from '@tidygpt/shared';
 
-const badgeStyle = (bg: string, fg: string): React.CSSProperties => ({
-  display: "inline-block", padding: "2px 8px", background: bg, color: fg, borderRadius: 4, fontSize: 11, fontWeight: 500, lineHeight: "18px",
-});
+const field: React.CSSProperties = { padding: '6px 8px', background: '#111113', color: '#fafafa', border: '1px solid #27272a', borderRadius: 5, fontSize: 12 };
+const btn: React.CSSProperties = { padding: '6px 10px', background: '#1e1e21', color: '#fafafa', border: '1px solid #27272a', borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 600 };
+const th: React.CSSProperties = { padding: '9px 11px', color: '#71717a', fontSize: 11, textTransform: 'uppercase', whiteSpace: 'nowrap', textAlign: 'left' };
+const td: React.CSSProperties = { padding: '10px 11px', borderTop: '1px solid #1e1e21', verticalAlign: 'top' };
 
-const thStyle: React.CSSProperties = { padding: "10px 14px", fontWeight: 500, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.04em", whiteSpace: "nowrap" };
-const tdStyle: React.CSSProperties = { padding: "10px 14px" };
-const btnStyle = (active = false): React.CSSProperties => ({
-  padding: "5px 12px", fontSize: 12, fontWeight: 500, background: active ? "#1e1e21" : "transparent", color: active ? "#fafafa" : "#71717a",
-  border: "1px solid #27272a", borderRadius: 4, cursor: "pointer", transition: "all 0.15s",
-});
+type SortKey = 'title' | 'platform' | 'messages' | 'age' | 'recommendation' | 'action';
 
-export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCandidate[], onUpdate: () => void }) {
-  const [filter, setFilter] = useState("all");
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("score_desc");
+export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCandidate[]; onUpdate: () => void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const keyOf = (c: ConversationCandidate) => c.providerKey || `${c.platform || "chatgpt"}:${c.id}`;
+  const [search, setSearch] = useState('');
+  const [platform, setPlatform] = useState('all');
+  const [recommendation, setRecommendation] = useState('all');
+  const [action, setAction] = useState('all');
+  const [asset, setAsset] = useState('all');
+  const [decision, setDecision] = useState('all');
+  const [minMessages, setMinMessages] = useState('');
+  const [maxMessages, setMaxMessages] = useState('');
+  const [sort, setSort] = useState<SortKey>('messages');
+  const [direction, setDirection] = useState<'asc' | 'desc'>('asc');
+  const [notice, setNotice] = useState('');
+  const keyOf = (candidate: ConversationCandidate) => candidate.providerKey || `${candidate.platform || 'chatgpt'}:${candidate.id}`;
+  useEffect(() => setSelected(new Set()), [search, platform, recommendation, action, asset, decision, minMessages, maxMessages]);
 
-  const filteredAndSorted = useMemo(() => {
-    let result = candidates.filter(c => {
-      if (filter === "archive") return c.recommendation === "archive_candidate" || c.recommendation === "strong_archive_candidate";
-      if (filter === "delete") return c.recommendation === "delete_candidate";
-      if (filter === "protected") return c.recommendation === "protected";
-      if (filter === "review") return c.recommendation === "manual_review";
+  const rows = useMemo(() => {
+    const lower = search.toLocaleLowerCase();
+    const result = candidates.filter(candidate => {
+      const messages = candidate.counts?.totalMessages;
+      if (lower && !`${candidate.title || ''} ${candidate.id} ${(candidate.matchedRuleNames || []).join(' ')}`.toLocaleLowerCase().includes(lower)) return false;
+      if (platform !== 'all' && (candidate.platform || 'chatgpt') !== platform) return false;
+      if (recommendation !== 'all' && candidate.recommendation !== recommendation) return false;
+      if (action !== 'all' && (candidate.selectedAction || 'none') !== action) return false;
+      if (decision !== 'all' && (candidate.userDecision || 'none') !== decision) return false;
+      if (minMessages && (messages == null || messages < Number(minMessages))) return false;
+      if (maxMessages && (messages == null || messages > Number(maxMessages))) return false;
+      if (asset === 'files' && candidate.signals.hasFile !== true) return false;
+      if (asset === 'code' && candidate.signals.hasCode !== true) return false;
+      if (asset === 'images' && candidate.signals.hasImage !== true) return false;
+      if (asset === 'artifacts' && candidate.signals.hasArtifact !== true) return false;
+      if (asset === 'none' && (candidate.signals.hasFile !== false || candidate.signals.hasCode !== false || candidate.signals.hasImage !== false || candidate.signals.hasArtifact !== false)) return false;
       return true;
     });
-
-    if (search) {
-      const lower = search.toLowerCase();
-      result = result.filter(c => (c.title || "").toLowerCase().includes(lower) || (c.id || "").includes(lower));
-    }
-
+    const value = (candidate: ConversationCandidate) => {
+      if (sort === 'title') return candidate.title || '';
+      if (sort === 'platform') return candidate.platform || 'chatgpt';
+      if (sort === 'messages') return candidate.counts?.totalMessages ?? Number.MAX_SAFE_INTEGER;
+      if (sort === 'age') return candidate.dates?.ageDays ?? Number.MAX_SAFE_INTEGER;
+      if (sort === 'recommendation') return candidate.recommendation || '';
+      return candidate.selectedAction || 'none';
+    };
     return result.sort((a, b) => {
-      if (sort === "score_desc") return (b.score?.total || 0) - (a.score?.total || 0);
-      if (sort === "score_asc") return (a.score?.total || 0) - (b.score?.total || 0);
-      if (sort === "messages_desc") return (b.counts?.totalMessages || 0) - (a.counts?.totalMessages || 0);
-      return 0;
+      const av = value(a); const bv = value(b);
+      const compared = typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv));
+      return direction === 'asc' ? compared : -compared;
     });
-  }, [candidates, filter, search, sort]);
+  }, [candidates, search, platform, recommendation, action, asset, decision, minMessages, maxMessages, sort, direction]);
 
-  function toggleSelect(id: string) {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
+  function sortBy(key: SortKey) {
+    if (sort === key) setDirection(value => value === 'asc' ? 'desc' : 'asc');
+    else { setSort(key); setDirection('asc'); }
   }
 
-  function selectAll() {
-    if (selected.size === filteredAndSorted.length && filteredAndSorted.length > 0) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(filteredAndSorted.map(keyOf)));
-    }
+  function toggle(key: string) {
+    setSelected(current => { const next = new Set(current); next.has(key) ? next.delete(key) : next.add(key); return next; });
   }
 
-  async function bulkAction(action: "archive" | "delete" | "archive_then_delete" | "none") {
-    const data = await chrome.storage.local.get(["tidygptCandidates"]);
-    const existing = (data.tidygptCandidates || []) as ConversationCandidate[];
-    for (const c of existing) {
-      if (selected.has(keyOf(c))) {
-        c.selectedAction = action;
-      }
-    }
-    await chrome.storage.local.set({ tidygptCandidates: existing });
-    setSelected(new Set());
-    onUpdate();
+  function selectVisible() {
+    const visible = rows.map(keyOf);
+    setSelected(current => visible.length && visible.every(key => current.has(key)) ? new Set() : new Set(visible));
   }
 
-  function exportCSV() {
-    const rows = [
-      ["ID", "Title", "URL", "Source", "UserMsgs", "AsstMsgs", "TotalMsgs", "Score", "Recommendation", "Action"]
-    ];
-    for (const c of filteredAndSorted) {
-      if (selected.size > 0 && !selected.has(keyOf(c))) continue;
-      const title = c.title || "Untitled";
-      rows.push([
-        c.id, `"${title.replace(/"/g, '""')}"`, c.url || "", c.source,
-        c.counts?.userMessages?.toString() || '0', c.counts?.assistantMessages?.toString() || '0',
-        c.counts?.totalMessages?.toString() || '0', c.score?.total?.toString() || '0',
-        c.recommendation || "unknown", c.selectedAction || 'none'
-      ]);
-    }
-    const csv = rows.map(r => r.join(",")).join("\n");
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = "tidygpt_candidates.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+  async function assignAction(nextAction: ConversationCandidate['selectedAction']) {
+    let skipped = 0;
+    const next = candidates.map(candidate => {
+      if (!selected.has(keyOf(candidate))) return candidate;
+      if (candidate.userDecision && nextAction !== 'none') { skipped++; return candidate; }
+      if (nextAction === 'archive' && candidate.platform && candidate.platform !== 'chatgpt') { skipped++; return candidate; }
+      return { ...candidate, selectedAction: nextAction };
+    });
+    await chrome.storage.local.set({ tidygptCandidates: next });
+    setNotice(skipped ? `${skipped} protected or archive-unsupported item(s) were not staged.` : `Updated ${selected.size} item(s).`);
+    setSelected(new Set()); onUpdate();
   }
 
-  function exportJSON() {
-    const items = filteredAndSorted.filter(c => selected.size === 0 || selected.has(keyOf(c)));
+  async function saveDecision(nextDecision: SavedConversationDecision['decision']) {
+    const data = await chrome.storage.local.get(['tidygptSavedDecisions']);
+    const map = new Map<string, SavedConversationDecision>(((data.tidygptSavedDecisions || []) as SavedConversationDecision[]).map(item => [item.providerKey, item]));
+    const nextCandidates = candidates.map(candidate => {
+      const key = keyOf(candidate);
+      if (!selected.has(key)) return candidate;
+      map.set(key, {
+        providerKey: key, platform: candidate.platform || 'chatgpt', id: candidate.id,
+        title: candidate.title, url: candidate.url, decision: nextDecision, createdAt: new Date().toISOString(),
+      });
+      return { ...candidate, userDecision: nextDecision, recommendation: 'protected' as const, selectedAction: 'none' as const };
+    });
+    await chrome.storage.local.set({ tidygptSavedDecisions: Array.from(map.values()), tidygptCandidates: nextCandidates });
+    setNotice(`${selected.size} conversation(s) will be protected in every future scan.`);
+    setSelected(new Set()); onUpdate();
+  }
+
+  function exportReview() {
+    const items = rows.filter(candidate => !selected.size || selected.has(keyOf(candidate)));
     const blob = new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = "tidygpt_candidates.json";
-    a.click();
-    URL.revokeObjectURL(url);
+    const url = URL.createObjectURL(blob); const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = 'tidygpt-audit-review.json'; anchor.click(); URL.revokeObjectURL(url);
   }
 
-  function getRecBadge(rec: string | undefined) {
-    const r = rec || "unknown";
-    if (r.includes("archive")) return badgeStyle("#172554", "#93c5fd");
-    if (r === "delete_candidate") return badgeStyle("#450a0a", "#fca5a5");
-    if (r === "protected") return badgeStyle("#052e16", "#6ee7b7");
-    if (r === "manual_review") return badgeStyle("#422006", "#fde68a");
-    return badgeStyle("#1e1e21", "#71717a");
-  }
-
-  function getActionLabel(action: string | undefined) {
-    if (!action || action === "none") return "—";
-    if (action === "archive") return "ARCHIVE";
-    if (action === "delete") return "DELETE";
-    if (action === "archive_then_delete") return "ARCH+DEL";
-    return action;
-  }
-
-  return (
-    <div>
-      {/* Header row */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 600, margin: 0, letterSpacing: "-0.01em" }}>Review Queue</h2>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input 
-            type="text" 
-            placeholder="Search..." 
-            value={search} 
-            onChange={e => setSearch(e.target.value)}
-            style={{ padding: "6px 10px", background: "#111113", color: "#fafafa", border: "1px solid #27272a", borderRadius: 4, width: 160, fontSize: 12 }}
-          />
-          <select value={filter} onChange={e => setFilter(e.target.value)} style={{ padding: "6px 10px", background: "#111113", color: "#fafafa", border: "1px solid #27272a", borderRadius: 4, fontSize: 12 }}>
-            <option value="all">All ({candidates.length})</option>
-            <option value="archive">Archive</option>
-            <option value="delete">Delete</option>
-            <option value="review">Manual Review</option>
-            <option value="protected">Protected</option>
-          </select>
-          <select value={sort} onChange={e => setSort(e.target.value)} style={{ padding: "6px 10px", background: "#111113", color: "#fafafa", border: "1px solid #27272a", borderRadius: 4, fontSize: 12 }}>
-            <option value="score_desc">Score ↓</option>
-            <option value="score_asc">Score ↑</option>
-            <option value="messages_desc">Messages ↓</option>
-          </select>
-        </div>
-      </div>
-
-      {/* Toolbar */}
-      <div style={{ padding: "8px 14px", background: "#111113", border: "1px solid #1e1e21", borderRadius: "8px 8px 0 0", display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 12, color: "#52525b", minWidth: 70 }}>{selected.size} selected</span>
-          <button onClick={() => bulkAction("archive")} disabled={selected.size === 0} style={btnStyle()}>Mark Archive</button>
-          <button onClick={() => bulkAction("delete")} disabled={selected.size === 0} style={{ ...btnStyle(), borderColor: selected.size > 0 ? "#7f1d1d" : "#27272a", color: selected.size > 0 ? "#fca5a5" : "#71717a" }}>Mark Delete</button>
-          <button onClick={() => bulkAction("none")} disabled={selected.size === 0} style={btnStyle()}>Clear</button>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={exportCSV} disabled={filteredAndSorted.length === 0} style={btnStyle()}>CSV</button>
-          <button onClick={exportJSON} disabled={filteredAndSorted.length === 0} style={btnStyle()}>JSON</button>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div style={{ border: "1px solid #1e1e21", borderTop: "none", borderRadius: "0 0 8px 8px", overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: "#111113", color: "#52525b", textAlign: "left" }}>
-              <th style={{ ...thStyle, width: 36 }}><input type="checkbox" checked={selected.size === filteredAndSorted.length && filteredAndSorted.length > 0} onChange={selectAll} /></th>
-              <th style={thStyle}>Title</th>
-              <th style={thStyle}>Source</th>
-              <th style={thStyle}>Msgs</th>
-              <th style={thStyle}>Score</th>
-              <th style={thStyle}>Class</th>
-              <th style={thStyle}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredAndSorted.map(c => (
-              <tr
-                key={keyOf(c)}
-                style={{ borderTop: "1px solid #1e1e21", background: selected.has(keyOf(c)) ? "#141418" : "transparent", transition: "background 0.1s" }}
-                onMouseEnter={e => { if (!selected.has(keyOf(c))) e.currentTarget.style.background = "#0d0d10"; }}
-                onMouseLeave={e => { if (!selected.has(keyOf(c))) e.currentTarget.style.background = "transparent"; }}
-              >
-                <td style={tdStyle}>
-                  <input type="checkbox" checked={selected.has(keyOf(c))} onChange={() => toggleSelect(keyOf(c))} />
-                </td>
-                <td style={{ ...tdStyle, maxWidth: 280 }}>
-                  <div style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginBottom: 2 }}>{c.title || "Untitled"}</div>
-                  <div style={{ fontSize: 11, color: "#52525b", display: "flex", gap: 8, alignItems: "center" }}>
-                    <a href={c.url} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "none", fontSize: 11 }}>Open</a>
-                    {c.riskFlags?.includes("protected_keyword") && <span style={{ color: "#f59e0b", fontSize: 10, fontWeight: 600 }}>PROTECTED</span>}
-                    {c.riskFlags?.includes("current_chat") && <span style={{ color: "#a78bfa", fontSize: 10, fontWeight: 600 }}>CURRENT</span>}
-                  </div>
-                </td>
-                <td style={{ ...tdStyle, color: "#52525b", fontSize: 12 }}>{c.platform ? c.platform[0].toUpperCase() + c.platform.slice(1) : (c.source === "export" ? "ChatGPT Export" : "Live")}</td>
-                <td style={{ ...tdStyle, color: "#71717a", fontVariantNumeric: "tabular-nums" }}>{c.counts?.totalMessages ?? '—'}</td>
-                <td style={{ ...tdStyle, fontVariantNumeric: "tabular-nums", fontWeight: 600, color: (c.score?.total || 0) >= 70 ? "#f87171" : (c.score?.total || 0) >= 40 ? "#fbbf24" : "#71717a" }}>{c.score?.total ?? '—'}</td>
-                <td style={tdStyle}>
-                  <span style={getRecBadge(c.recommendation)}>
-                    {(c.recommendation || "unknown").replace(/_/g, " ").replace("candidate", "").trim()}
-                  </span>
-                </td>
-                <td style={{ ...tdStyle, fontWeight: 600, fontSize: 11, letterSpacing: "0.03em", color: c.selectedAction === 'delete' ? '#f87171' : c.selectedAction === 'archive' ? '#60a5fa' : c.selectedAction === 'archive_then_delete' ? '#c084fc' : '#3f3f46' }}>
-                  {getActionLabel(c.selectedAction)}
-                </td>
-              </tr>
-            ))}
-            {filteredAndSorted.length === 0 && (
-              <tr>
-                <td colSpan={7} style={{ padding: 40, textAlign: "center", color: "#3f3f46", fontSize: 13 }}>
-                  {candidates.length === 0 ? "No candidates scanned yet. Use the Scan tab to import data." : "No candidates match the current filter."}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ marginTop: 8, fontSize: 12, color: "#3f3f46", textAlign: "right" }}>
-        Showing {filteredAndSorted.length} of {candidates.length}
-      </div>
+  const allVisibleSelected = rows.length > 0 && rows.every(candidate => selected.has(keyOf(candidate)));
+  return <div>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 16 }}>
+      <div><h2 style={{ fontSize: 22, margin: '0 0 5px' }}>3. Review the audit</h2><p style={{ margin: 0, color: '#71717a', fontSize: 12 }}>Filter any column, open uncertain conversations, and permanently protect anything important before execution.</p></div>
+      <button onClick={exportReview} style={btn}>Export visible JSON</button>
     </div>
-  );
+
+    <div style={{ padding: 12, background: '#111113', border: '1px solid #1e1e21', borderRadius: '8px 8px 0 0', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search title, ID, matched rule…" style={{ ...field, width: 220 }} />
+      <select value={platform} onChange={event => setPlatform(event.target.value)} style={field}><option value="all">All platforms</option><option value="chatgpt">ChatGPT</option><option value="claude">Claude</option><option value="gemini">Gemini</option></select>
+      <select value={recommendation} onChange={event => setRecommendation(event.target.value)} style={field}><option value="all">All classes</option><option value="protected">Protected</option><option value="delete_candidate">Delete</option><option value="strong_archive_candidate">Archive</option><option value="archive_candidate">Archive suggestion</option><option value="manual_review">Manual review</option><option value="uncertain">Uncertain</option><option value="ignore">No rule</option></select>
+      <select value={action} onChange={event => setAction(event.target.value)} style={field}><option value="all">All staged actions</option><option value="none">Not staged</option><option value="archive">Archive</option><option value="delete">Delete</option></select>
+      <select value={asset} onChange={event => setAsset(event.target.value)} style={field}><option value="all">Any content type</option><option value="files">Has files</option><option value="code">Has code</option><option value="images">Has images</option><option value="artifacts">Has artifacts</option><option value="none">No assets/code</option></select>
+      <select value={decision} onChange={event => setDecision(event.target.value)} style={field}><option value="all">Any keep status</option><option value="keep">Permanent keep</option><option value="important">Important</option><option value="none">Not manually protected</option></select>
+      <input type="number" min="0" value={minMessages} onChange={event => setMinMessages(event.target.value)} placeholder="Min msgs" style={{ ...field, width: 80 }} />
+      <input type="number" min="0" value={maxMessages} onChange={event => setMaxMessages(event.target.value)} placeholder="Max msgs" style={{ ...field, width: 80 }} />
+    </div>
+
+    <div style={{ padding: 10, display: 'flex', flexWrap: 'wrap', gap: 7, alignItems: 'center', border: '1px solid #1e1e21', borderTop: 0 }}>
+      <strong style={{ fontSize: 12, marginRight: 4 }}>{selected.size} selected</strong>
+      <button disabled={!selected.size} onClick={() => saveDecision('keep')} style={{ ...btn, color: '#86efac' }}>Always keep</button>
+      <button disabled={!selected.size} onClick={() => saveDecision('important')} style={{ ...btn, color: '#fde68a' }}>Mark important</button>
+      <button disabled={!selected.size} onClick={() => assignAction('archive')} style={{ ...btn, color: '#93c5fd' }}>Stage archive</button>
+      <button disabled={!selected.size} onClick={() => assignAction('delete')} style={{ ...btn, color: '#fca5a5' }}>Stage delete</button>
+      <button disabled={!selected.size} onClick={() => assignAction('none')} style={btn}>Clear action</button>
+      {notice && <span style={{ color: '#a7f3d0', fontSize: 12 }}>{notice}</span>}
+    </div>
+
+    <div style={{ overflow: 'auto', border: '1px solid #1e1e21', borderTop: 0, borderRadius: '0 0 8px 8px' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead style={{ background: '#111113' }}><tr>
+          <th style={th}><input type="checkbox" checked={allVisibleSelected} onChange={selectVisible} /></th>
+          <Sortable label="Title" column="title" active={sort} direction={direction} onClick={sortBy} />
+          <Sortable label="Platform" column="platform" active={sort} direction={direction} onClick={sortBy} />
+          <Sortable label="Messages" column="messages" active={sort} direction={direction} onClick={sortBy} />
+          <Sortable label="Age" column="age" active={sort} direction={direction} onClick={sortBy} />
+          <th style={th}>Content</th><th style={th}>Matched rules</th>
+          <Sortable label="Class" column="recommendation" active={sort} direction={direction} onClick={sortBy} />
+          <Sortable label="Action" column="action" active={sort} direction={direction} onClick={sortBy} />
+        </tr></thead>
+        <tbody>{rows.map(candidate => {
+          const key = keyOf(candidate);
+          return <tr key={key} style={{ background: selected.has(key) ? '#15151a' : 'transparent' }}>
+            <td style={td}><input type="checkbox" checked={selected.has(key)} onChange={() => toggle(key)} /></td>
+            <td style={{ ...td, minWidth: 220, maxWidth: 320 }}><div style={{ fontWeight: 600 }}>{candidate.title || 'Untitled'}</div><div style={{ marginTop: 4 }}><a href={candidate.url} target="_blank" rel="noreferrer" style={{ color: '#60a5fa' }}>Open</a>{candidate.userDecision && <span style={{ marginLeft: 8, color: candidate.userDecision === 'important' ? '#fde68a' : '#86efac' }}>{candidate.userDecision.toUpperCase()}</span>}</div></td>
+            <td style={td}>{candidate.platform || 'chatgpt'}</td>
+            <td style={td}>{candidate.counts?.totalMessages ?? '—'}<div style={{ color: '#52525b', fontSize: 10 }}>{candidate.counts?.userMessages ?? '—'} user</div></td>
+            <td style={td}>{candidate.dates?.ageDays != null ? `${candidate.dates.ageDays}d` : '—'}</td>
+            <td style={{ ...td, color: '#a1a1aa', minWidth: 110 }}>{[candidate.signals.hasFile === true && 'file', candidate.signals.hasCode === true && 'code', candidate.signals.hasImage === true && 'image', candidate.signals.hasArtifact === true && 'artifact'].filter(Boolean).join(', ') || 'none detected'}</td>
+            <td style={{ ...td, minWidth: 150 }}>{candidate.matchedRuleNames?.length ? candidate.matchedRuleNames.join(', ') : <span style={{ color: '#52525b' }}>No cleanup rule</span>}</td>
+            <td style={{ ...td, color: candidate.recommendation === 'protected' ? '#86efac' : candidate.recommendation === 'delete_candidate' ? '#fca5a5' : '#d4d4d8' }}>{candidate.recommendation.replace(/_/g, ' ')}</td>
+            <td style={{ ...td, color: candidate.selectedAction === 'delete' ? '#f87171' : candidate.selectedAction === 'archive' ? '#60a5fa' : '#71717a', fontWeight: 700 }}>{(candidate.selectedAction || 'none').toUpperCase()}</td>
+          </tr>;
+        })}</tbody>
+      </table>
+      {!rows.length && <div style={{ padding: 40, textAlign: 'center', color: '#52525b' }}>{candidates.length ? 'No conversations match these column filters.' : 'Scan conversations, then run an audit.'}</div>}
+    </div>
+    <div style={{ marginTop: 8, color: '#52525b', fontSize: 12, textAlign: 'right' }}>Showing {rows.length} of {candidates.length}</div>
+  </div>;
+}
+
+function Sortable({ label, column, active, direction, onClick }: { label: string; column: SortKey; active: SortKey; direction: 'asc' | 'desc'; onClick: (key: SortKey) => void }) {
+  return <th style={{ ...th, cursor: 'pointer' }} onClick={() => onClick(column)}>{label} {active === column ? (direction === 'asc' ? '↑' : '↓') : ''}</th>;
 }

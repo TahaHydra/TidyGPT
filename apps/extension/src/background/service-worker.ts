@@ -1,10 +1,10 @@
 import type {
-  ActionResult, CleanupJob, ConversationCandidate, PlatformId, RulesConfig,
+  ActionResult, CleanupJob, ConversationCandidate, PlatformId, RiskFlag, RulesConfig, SavedConversationDecision,
 } from '@tidygpt/shared';
 import { defaultSettings } from '@tidygpt/shared';
-import { calculateScore, classifyScore, evaluateRules } from '@tidygpt/core';
+import { calculateScore, classifyScore, evaluateRulesDetailed } from '@tidygpt/core';
 import {
-  getJob, getSettings, saveConversationBackup, saveLog, updateJob,
+  getConversationBackup, getJob, getSettings, saveConversationBackup, saveLog, updateJob,
 } from '@tidygpt/storage';
 import { PlatformAdapters } from '@tidygpt/ui-automation';
 
@@ -19,12 +19,19 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const candidateKey = (candidate: ConversationCandidate) => candidate.providerKey ?? `${candidate.platform ?? 'chatgpt'}:${candidate.id}`;
 
 async function mergeCandidates(candidates: ConversationCandidate[]) {
-  const data = await chrome.storage.local.get(['tidygptCandidates']);
+  const data = await chrome.storage.local.get(['tidygptCandidates', 'tidygptSavedDecisions']);
   const existing = (data.tidygptCandidates || []) as ConversationCandidate[];
+  const saved = new Map(((data.tidygptSavedDecisions || []) as SavedConversationDecision[]).map(item => [item.providerKey, item]));
   const map = new Map(existing.map(candidate => [candidateKey(candidate), candidate]));
   for (const candidate of candidates) {
     const key = candidateKey(candidate);
-    map.set(key, { ...map.get(key), ...candidate, providerKey: key });
+    const decision = saved.get(key);
+    map.set(key, {
+      ...map.get(key), ...candidate, providerKey: key,
+      userDecision: decision?.decision,
+      recommendation: decision ? 'protected' : candidate.recommendation,
+      selectedAction: decision ? 'none' : candidate.selectedAction,
+    });
   }
   await chrome.storage.local.set({
     tidygptCandidates: Array.from(map.values()),
@@ -68,6 +75,7 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
 
   try {
     const failures: string[] = [];
+    const pendingUpdates: ConversationCandidate[] = [];
     for (let index = 0; index < candidates.length; index++) {
       const candidate = candidates[index];
       if (!candidate.url) continue;
@@ -87,8 +95,10 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
       if (!response?.ok) throw new Error(response?.error || `Could not read ${candidate.title}`);
 
       const scanText: string = response.scanText ?? '';
+      const fullText: string = (response.backup.messages as Array<{ text: string }>).map(message => message.text).join('\n');
+      const protectedHaystack = `${candidate.title || ''}\n${fullText}`.toLocaleLowerCase();
       const protectedMatches = settings.protectedKeywords.filter(keyword =>
-        keyword.trim() && scanText.toLocaleLowerCase().includes(keyword.toLocaleLowerCase())
+        keyword.trim() && protectedHaystack.includes(keyword.toLocaleLowerCase())
       );
       const updatedAt = response.updatedAt;
       const ageDays = updatedAt
@@ -98,6 +108,9 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
       if (protectedMatches.length && !riskFlags.includes('protected_keyword')) riskFlags.push('protected_keyword');
       if (response.hasCode && !riskFlags.includes('has_code')) riskFlags.push('has_code');
       if (response.hasFile && !riskFlags.includes('has_files')) riskFlags.push('has_files');
+      if (response.hasImage && !riskFlags.includes('has_image')) riskFlags.push('has_image');
+      if (response.hasArtifact && !riskFlags.includes('has_artifact')) riskFlags.push('has_artifact');
+      if (response.hasArtifact && !riskFlags.includes('is_project')) riskFlags.push('is_project');
 
       const scanned: ConversationCandidate = {
         ...candidate,
@@ -133,19 +146,24 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
         status: 'scanned',
       };
       scanned.score = calculateScore(scanned, settings);
-      const ruleOverride = evaluateRules(scanned, rules, scanText);
-      scanned.recommendation = classifyScore(scanned.score, settings, riskFlags, ruleOverride);
+      const evaluation = evaluateRulesDetailed(scanned, rules, scanText);
+      scanned.matchedRuleIds = evaluation.matchedRuleIds;
+      scanned.matchedRuleNames = evaluation.matchedRuleNames;
+      scanned.recommendation = classifyScore(scanned.score, settings, riskFlags, evaluation.decision);
       await saveConversationBackup({ ...response.backup, title: candidate.title || response.backup.title });
-      await mergeCandidates([scanned]);
+      pendingUpdates.push(scanned);
       } catch (error: any) {
         failures.push(`${candidate.title || candidate.id}: ${error.message}`);
-        await mergeCandidates([{
+        pendingUpdates.push({
           ...candidate,
           providerKey: candidateKey(candidate),
           riskFlags: Array.from(new Set([...candidate.riskFlags, 'unknown_state' as const])),
           recommendation: 'uncertain',
           status: 'failed',
-        }]);
+        });
+      }
+      if (pendingUpdates.length >= 10 || index === candidates.length - 1) {
+        await mergeCandidates(pendingUpdates.splice(0));
       }
       await chrome.storage.local.set({
         tidygptScanProgress: { platform, status: 'scanning', completed: index + 1, total: candidates.length, failures: failures.length },
@@ -162,6 +180,76 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
     if (workerTabId) await chrome.tabs.remove(workerTabId).catch(() => undefined);
     contentScanRunning = false;
   }
+}
+
+async function runRuleAudit() {
+  const data = await chrome.storage.local.get(['tidygptCandidates', 'tidygptRules', 'tidygptSavedDecisions']);
+  const candidates = (data.tidygptCandidates || []) as ConversationCandidate[];
+  const settings = { ...defaultSettings, ...(await getSettings()) };
+  const rules: RulesConfig = {
+    builtInSettings: settings,
+    customRules: Array.isArray(data.tidygptRules) ? data.tidygptRules : [],
+  };
+  const saved = new Map(((data.tidygptSavedDecisions || []) as SavedConversationDecision[]).map(item => [item.providerKey, item]));
+  let missingContent = 0;
+  let unsupportedArchive = 0;
+
+  const audited = await Promise.all(candidates.map(async candidate => {
+    const key = candidateKey(candidate);
+    const backup = await getConversationBackup(key);
+    if (!backup) missingContent++;
+    const bodyText = backup?.messages.map(message => message.text).join('\n') ?? '';
+    const protectedHaystack = `${candidate.title || ''}\n${bodyText}`.toLocaleLowerCase();
+    const protectedMatches = settings.protectedKeywords.filter(keyword =>
+      keyword.trim() && protectedHaystack.includes(keyword.toLocaleLowerCase())
+    );
+    const riskFlags: RiskFlag[] = candidate.riskFlags.filter(flag => flag !== 'protected_keyword');
+    if (protectedMatches.length) riskFlags.push('protected_keyword');
+    const evaluatedCandidate: ConversationCandidate = {
+      ...candidate,
+      signals: { ...candidate.signals, protectedKeywordMatches: protectedMatches },
+      riskFlags,
+    };
+    const evaluation = evaluateRulesDetailed(evaluatedCandidate, rules, bodyText);
+    const decision = saved.get(key);
+    const score = calculateScore(evaluatedCandidate, settings);
+    const classified = classifyScore(score, settings, riskFlags, evaluation.decision);
+    let recommendation = decision
+      ? 'protected' as const
+      : evaluation.decision === 'none' && classified !== 'protected' && classified !== 'uncertain'
+        ? 'ignore' as const
+        : classified;
+    const archiveUnsupported = evaluation.decision === 'archive' && !PlatformAdapters[candidate.platform ?? 'chatgpt'].supportsArchive;
+    if (archiveUnsupported && !decision) {
+      unsupportedArchive++;
+      recommendation = 'manual_review';
+    }
+    return {
+      ...evaluatedCandidate,
+      score,
+      recommendation,
+      userDecision: decision?.decision,
+      matchedRuleIds: evaluation.matchedRuleIds,
+      matchedRuleNames: evaluation.matchedRuleNames,
+      selectedAction: decision || evaluation.decision === 'keep' || recommendation === 'protected' || archiveUnsupported
+        ? 'none' as const
+        : evaluation.decision === 'delete' ? 'delete' as const
+          : evaluation.decision === 'archive' ? 'archive' as const : 'none' as const,
+    };
+  }));
+
+  const summary = {
+    auditedAt: new Date().toISOString(),
+    total: audited.length,
+    archive: audited.filter(item => item.selectedAction === 'archive').length,
+    delete: audited.filter(item => item.selectedAction === 'delete').length,
+    protected: audited.filter(item => item.recommendation === 'protected').length,
+    unmatched: audited.filter(item => item.selectedAction === 'none' && item.recommendation !== 'protected').length,
+    missingContent,
+    unsupportedArchive,
+  };
+  await chrome.storage.local.set({ tidygptCandidates: audited, tidygptAuditSummary: summary });
+  return summary;
 }
 
 async function findPlatformTab(platform: PlatformId) {
@@ -183,6 +271,8 @@ async function runJob(jobId: string) {
   }
   await updateJob(jobId, { status: 'executing' });
   const queue = job.candidates.filter(candidate => candidate.selectedAction !== 'none');
+  const decisionData = await chrome.storage.local.get(['tidygptSavedDecisions']);
+  const protectedKeys = new Set(((decisionData.tidygptSavedDecisions || []) as SavedConversationDecision[]).map(item => item.providerKey));
   let completedCount = 0;
 
   for (const candidate of queue) {
@@ -190,9 +280,14 @@ async function runJob(jobId: string) {
     while (isPaused && !isCancelled) await wait(500);
     if (isCancelled) break;
     const platform = candidate.platform ?? 'chatgpt';
-    const tab = await findPlatformTab(platform);
     let result: ActionResult;
-    try {
+    if (protectedKeys.has(candidateKey(candidate)) || candidate.userDecision || candidate.recommendation === 'protected') {
+      result = {
+        id: candidate.id, action: candidate.selectedAction as ActionResult['action'], status: 'skipped',
+        error: 'Skipped because the conversation is protected', timestamp: new Date().toISOString(),
+      };
+    } else try {
+      const tab = await findPlatformTab(platform);
       if (!tab?.id) throw new Error(`No ${PlatformAdapters[platform].label} tab is open`);
       if (candidate.url) {
         await chrome.tabs.update(tab.id, { url: candidate.url });
@@ -253,10 +348,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })).then(sendResponse); return true;
   }
   if (message.type === 'START_CONTENT_SCAN') {
+    if (contentScanRunning) { sendResponse({ ok: false, error: 'A content scan is already running' }); return false; }
     scanPlatformHistory(message.payload.platform, message.payload.candidates);
     sendResponse({ ok: true }); return false;
   }
-  if (message.type === 'EXECUTE_ACTION_PLAN') { runJob(message.payload.jobId); sendResponse({ ok: true }); return false; }
+  if (message.type === 'RUN_RULE_AUDIT') {
+    if (contentScanRunning) { sendResponse({ ok: false, error: 'Wait for the content scan to finish before auditing' }); return false; }
+    runRuleAudit().then(summary => sendResponse({ ok: true, summary }))
+      .catch(error => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message.type === 'DISCOVERY_PROGRESS') {
+    chrome.storage.local.set({ tidygptDiscoveryProgress: message.payload });
+    sendResponse({ ok: true }); return false;
+  }
+  if (message.type === 'OPEN_DASHBOARD') {
+    chrome.runtime.openOptionsPage(); sendResponse({ ok: true }); return false;
+  }
+  if (message.type === 'EXECUTE_ACTION_PLAN') {
+    if (contentScanRunning) { sendResponse({ ok: false, error: 'Wait for the content scan to finish before executing actions' }); return false; }
+    if (activeJobId) { sendResponse({ ok: false, error: 'Another cleanup job is already running' }); return false; }
+    runJob(message.payload.jobId); sendResponse({ ok: true }); return false;
+  }
   if (message.type === 'PAUSE_JOB') { isPaused = true; if (activeJobId) updateJob(activeJobId, { status: 'paused' }); sendResponse({ ok: true }); return false; }
   if (message.type === 'RESUME_JOB') { isPaused = false; if (activeJobId) updateJob(activeJobId, { status: 'executing' }); sendResponse({ ok: true }); return false; }
   if (message.type === 'CANCEL_JOB') { isCancelled = true; isPaused = false; sendResponse({ ok: true }); return false; }

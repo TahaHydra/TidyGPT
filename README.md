@@ -7,7 +7,10 @@ TidyGPT is a local-first inbox-zero tool for AI conversation history. The browse
 - One dashboard for ChatGPT, Claude, and Gemini histories
 - Virtualization-aware sidebar discovery that stops after repeated no-progress observations rather than a fixed scroll count
 - Live body inspection of the first and last configurable number of messages
-- Title/body substring and regular-expression rules, age and message thresholds, and confidence-aware scoring
+- Plain-language rule cards with checkboxes for title/body words, regex, age, message count, text length, files, code, images, and artifacts
+- A safe audit step that stages the exact archive/delete plan without changing anything online
+- Permanent Keep and Important decisions that override rules in every future scan
+- Review-table column filters, sortable columns, matched-rule explanations, and JSON exports
 - Protected-keyword, current-chat, code, file, image, artifact, and project signals
 - Mandatory review and typed confirmation for destructive actions
 - Local IndexedDB content backups and a required JSON download before deletion (enabled by default)
@@ -24,9 +27,11 @@ npm test
 npm run build
 ```
 
-Load `apps/extension/dist` as an unpacked extension from the browser's extension management page. Open ChatGPT, Claude, or Gemini, then click the floating **TidyGPT · Scan** button. The dashboard is available from the extension popup.
+Load `apps/extension/dist` as an unpacked extension from the browser's extension management page. Open ChatGPT, Claude, or Gemini. The floating controls provide both **Scan** and **TidyGPT Dashboard** buttons, and the dashboard is also available from the extension popup.
 
-The scan first walks the history list, then reads conversations sequentially in one inactive temporary tab. Keep the relevant AI account signed in until the scan completes. Review every recommendation before staging an action.
+The scan first walks the history list, then reads conversations sequentially in one inactive temporary tab. Discovery is unlimited by default and stops only after the sidebar reaches the bottom and stays unchanged for the configured number of checks. The Scan page shows the discovered count, scroll steps, completion reason, configurable delay, and optional maximum. Keep the relevant AI account signed in until the scan completes.
+
+The intended workflow is **Scan → Rules & audit → Review → Run safely**. Rules only stage actions; they never execute them. Global protections and permanent Keep/Important decisions override cleanup rules. Review the audit before execution, and keep backup-before-delete enabled.
 
 ## Privacy and source captures
 

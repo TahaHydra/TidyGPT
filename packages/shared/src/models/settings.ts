@@ -9,6 +9,7 @@ export type CleanerSettings = {
   // Behaviors
   codeBehavior: BehaviorSetting;
   fileBehavior: BehaviorSetting;
+  imageBehavior: BehaviorSetting;
   projectBehavior: BehaviorSetting;
   
   // Exclusions
@@ -17,6 +18,9 @@ export type CleanerSettings = {
   // Live content scan
   contentScanMessageLimit?: number;
   deepScanIdleRounds?: number;
+  deepScanStepDelayMs?: number;
+  /** Zero means unlimited. */
+  deepScanMaxConversations?: number;
   backupBeforeDelete?: boolean;
   
   // Execution Safety
@@ -37,10 +41,13 @@ export const defaultSettings: CleanerSettings = {
   olderThanDays: 30,
   codeBehavior: "warn",
   fileBehavior: "block",
+  imageBehavior: "warn",
   projectBehavior: "block",
   protectedKeywords: [],
   contentScanMessageLimit: 20,
-  deepScanIdleRounds: 5,
+  deepScanIdleRounds: 10,
+  deepScanStepDelayMs: 650,
+  deepScanMaxConversations: 0,
   backupBeforeDelete: true,
   minSelectorConfidence: 0.8,
   delayMinMs: 1000,

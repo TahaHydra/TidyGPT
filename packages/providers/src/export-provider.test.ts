@@ -9,6 +9,7 @@ describe('Export Provider', () => {
     olderThanDays: 30,
     codeBehavior: "warn",
     fileBehavior: "block",
+    imageBehavior: "warn",
     projectBehavior: "block",
     protectedKeywords: ["secret"],
     minSelectorConfidence: 0.8,
@@ -40,5 +41,10 @@ describe('Export Provider', () => {
     expect(candidates[0].counts.totalMessages).toBe(2);
     expect(candidates[0].counts.userMessages).toBe(1);
     expect(candidates[0].counts.assistantMessages).toBe(1);
+
+    const backups = await provider.generateBackups();
+    expect(backups).toHaveLength(1);
+    expect(backups[0].providerKey).toBe('chatgpt:test1');
+    expect(backups[0].messages.map(message => message.text)).toEqual(['Hello', 'Hi']);
   });
 });

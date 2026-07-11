@@ -62,32 +62,46 @@ function findScrollContainer(): HTMLElement | null {
     ?? document.querySelector(adapter.sidebar) as HTMLElement | null;
 }
 
-async function performDeepScan(idleRounds = 5) {
+async function reportDiscovery(payload: Record<string, unknown>) {
+  try { await chrome.runtime.sendMessage({ type: 'DISCOVERY_PROGRESS', payload: { platform, ...payload } }); }
+  catch { /* Dashboard progress is helpful but must never stop discovery. */ }
+}
+
+async function performDeepScan(idleRounds = 10, stepDelayMs = 650, maxConversations = 0) {
   const scrollContainer = findScrollContainer();
   if (!scrollContainer) return discoverVisibleChats();
 
   const originalTop = scrollContainer.scrollTop;
   const candidates = new Map<string, ConversationCandidate>();
   let unchangedRounds = 0;
-  let previousTop = -1;
+  let previousHeight = -1;
+  let rounds = 0;
   scrollContainer.scrollTop = 0;
   await wait(300);
+  await reportDiscovery({ status: 'discovering', found: 0, rounds: 0, idleRounds, maxConversations });
 
   // Completion is based on repeated no-progress observations, not a history-size cap.
   for (let guard = 0; guard < 10_000 && unchangedRounds < Math.max(2, idleRounds); guard++) {
+    rounds = guard + 1;
     const before = candidates.size;
     for (const candidate of discoverVisibleChats()) candidates.set(candidate.providerKey!, candidate);
+    if (maxConversations > 0 && candidates.size >= maxConversations) break;
 
     const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
-    const nextTop = Math.min(maxTop, scrollContainer.scrollTop + Math.max(300, scrollContainer.clientHeight * 0.75));
+    const nextTop = Math.min(maxTop, scrollContainer.scrollTop + Math.max(240, scrollContainer.clientHeight * 0.6));
     scrollContainer.scrollTop = nextTop;
     scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-    await wait(450);
+    await wait(Math.max(250, stepDelayMs));
 
-    const progressed = candidates.size > before || scrollContainer.scrollTop !== previousTop;
-    unchangedRounds = progressed ? 0 : unchangedRounds + 1;
-    if (scrollContainer.scrollTop >= maxTop && candidates.size === before) unchangedRounds++;
-    previousTop = scrollContainer.scrollTop;
+    const atBottom = scrollContainer.scrollTop >= maxTop;
+    const listChanged = candidates.size > before || scrollContainer.scrollHeight !== previousHeight;
+    // Only count completion rounds while the list is genuinely stable at its
+    // bottom. Normal virtualized scrolling cannot end discovery early.
+    unchangedRounds = atBottom && !listChanged ? unchangedRounds + 1 : 0;
+    if (guard % 3 === 0 || atBottom) {
+      await reportDiscovery({ status: 'discovering', found: candidates.size, rounds, bottomIdleRounds: unchangedRounds, idleRounds, maxConversations });
+    }
+    previousHeight = scrollContainer.scrollHeight;
   }
 
   scrollContainer.scrollTop = originalTop;
@@ -100,7 +114,12 @@ async function performDeepScan(idleRounds = 5) {
     const normalized = (candidate.title ?? '').trim().toLocaleLowerCase();
     candidate.signals.duplicateTitle = normalized !== 'new chat' && (titleCounts.get(normalized) ?? 0) > 1;
   }
-  return Array.from(candidates.values());
+  const result = Array.from(candidates.values()).slice(0, maxConversations > 0 ? maxConversations : undefined);
+  await reportDiscovery({
+    status: 'discovered', found: result.length, rounds,
+    reason: maxConversations > 0 && result.length >= maxConversations ? 'maximum_reached' : 'sidebar_complete',
+  });
+  return result;
 }
 
 async function waitForConversation() {
@@ -177,35 +196,54 @@ async function saveCandidates(candidates: ConversationCandidate[]) {
 }
 
 function injectTidyGPTBadge() {
-  if (!adapter || !platform || document.getElementById("tidygpt-floating-badge")) return;
+  if (!adapter || !platform || document.getElementById("tidygpt-floating-tools")) return;
+  const tools = document.createElement('div');
+  tools.id = 'tidygpt-floating-tools';
+  Object.assign(tools.style, {
+    position: 'fixed', right: '18px', bottom: '18px', zIndex: '2147483647', display: 'flex', gap: '7px',
+    font: '500 13px system-ui, sans-serif',
+  });
   const badge = document.createElement("button");
   badge.id = "tidygpt-floating-badge";
-  badge.textContent = `TidyGPT · Scan ${adapter.label}`;
+  badge.textContent = `Scan ${adapter.label}`;
   Object.assign(badge.style, {
-    position: "fixed", right: "18px", bottom: "18px", zIndex: "2147483647", padding: "10px 14px",
+    padding: "10px 14px",
     borderRadius: "8px", border: "1px solid rgba(255,255,255,.18)", background: "#18181b",
     color: "#f4f4f5", font: "500 13px system-ui, sans-serif", boxShadow: "0 12px 24px rgba(0,0,0,.3)", cursor: "pointer",
   });
+  const dashboard = document.createElement('button');
+  dashboard.textContent = 'TidyGPT Dashboard';
+  Object.assign(dashboard.style, {
+    padding: '10px 14px', borderRadius: '8px', border: '1px solid #2563eb', background: '#1d4ed8',
+    color: '#fff', font: '600 13px system-ui, sans-serif', boxShadow: '0 12px 24px rgba(0,0,0,.3)', cursor: 'pointer',
+  });
+  dashboard.onclick = () => chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD' });
   badge.onclick = async () => {
     badge.disabled = true;
     badge.textContent = `Discovering ${adapter.label}…`;
     try {
       const settings = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
-      const candidates = await performDeepScan(settings?.deepScanIdleRounds ?? 5);
+      const candidates = await performDeepScan(
+        settings?.deepScanIdleRounds ?? 10,
+        settings?.deepScanStepDelayMs ?? 650,
+        settings?.deepScanMaxConversations ?? 0,
+      );
       await saveCandidates(candidates);
       badge.textContent = `Reading ${candidates.length} chats…`;
-      await chrome.runtime.sendMessage({ type: 'START_CONTENT_SCAN', payload: { platform, candidates } });
+      const queued = await chrome.runtime.sendMessage({ type: 'START_CONTENT_SCAN', payload: { platform, candidates } });
+      if (!queued?.ok) throw new Error(queued?.error || 'Could not start content scan');
       badge.textContent = `Queued ${candidates.length} chats`;
     } catch (error: any) {
       badge.textContent = `Scan failed: ${error?.message ?? 'unknown error'}`;
     } finally {
       setTimeout(() => {
-        badge.textContent = `TidyGPT · Scan ${adapter.label}`;
+        badge.textContent = `Scan ${adapter.label}`;
         badge.disabled = false;
       }, 4000);
     }
   };
-  document.documentElement.appendChild(badge);
+  tools.append(badge, dashboard);
+  document.documentElement.appendChild(tools);
 }
 
 injectTidyGPTBadge();
