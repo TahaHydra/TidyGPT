@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && copy manifest.json dist\\\\manifest.json",
+    "build": "tsc && vite build && vite build --config vite.content.config.ts && copy manifest.json dist\\\\manifest.json",
     "preview": "vite preview"
   },
   "dependencies": {

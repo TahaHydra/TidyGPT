@@ -9,8 +9,7 @@ export default defineConfig({
       input: {
         popup: resolve(__dirname, 'popup.html'),
         dashboard: resolve(__dirname, 'dashboard.html'),
-        background: resolve(__dirname, 'src/background/service-worker.ts'),
-        content: resolve(__dirname, 'src/content/index.ts')
+        background: resolve(__dirname, 'src/background/service-worker.ts')
       },
       output: {
         entryFileNames: 'assets/[name].js',
