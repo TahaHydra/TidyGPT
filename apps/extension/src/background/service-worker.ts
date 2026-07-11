@@ -1,5 +1,6 @@
 import type {
-  ActionResult, CleanupJob, ConversationCandidate, PlatformId, RiskFlag, RulesConfig, SavedConversationDecision,
+  ActionResult, CleanerSettings, CleanupJob, ConversationCandidate, CustomRule, PlatformId, RiskFlag,
+  RuleConditions, RulesConfig, SavedConversationDecision,
 } from '@tidygpt/shared';
 import { defaultSettings } from '@tidygpt/shared';
 import { calculateScore, classifyScore, evaluateRulesDetailed } from '@tidygpt/core';
@@ -16,6 +17,7 @@ let isCancelled = false;
 let contentScanRunning = false;
 let contentScanCancelled = false;
 let contentScanStopReason = '';
+let plannedAuditRunning = false;
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function waitForContentScan(ms: number) {
@@ -39,12 +41,43 @@ async function mergeCandidates(candidates: ConversationCandidate[]) {
   for (const candidate of candidates) {
     const key = candidateKey(candidate);
     const decision = saved.get(key);
-    map.set(key, {
-      ...map.get(key), ...candidate, providerKey: key,
+    const previous = map.get(key);
+    const rediscovered = candidate.status === 'discovered' && !!previous;
+    const merged: ConversationCandidate = {
+      ...previous, ...candidate, providerKey: key,
       userDecision: decision?.decision,
       recommendation: decision ? 'protected' : candidate.recommendation,
       selectedAction: decision ? 'none' : candidate.selectedAction,
-    });
+    };
+    if (rediscovered && previous) {
+      const previousContentSignals = !!previous.contentScannedAt || previous.source === 'export';
+      merged.source = previous.source;
+      merged.sourceConfidence = Math.max(previous.sourceConfidence, candidate.sourceConfidence);
+      merged.dates = previous.dates.dateConfidence >= candidate.dates.dateConfidence ? previous.dates : candidate.dates;
+      merged.counts = previous.counts.countConfidence >= candidate.counts.countConfidence ? previous.counts : candidate.counts;
+      merged.signals = {
+        ...candidate.signals,
+        ...(previousContentSignals ? {
+          hasCode: previous.signals.hasCode,
+          hasFile: previous.signals.hasFile,
+          hasImage: previous.signals.hasImage,
+          hasArtifact: previous.signals.hasArtifact,
+          isProject: previous.signals.isProject,
+          protectedKeywordMatches: previous.signals.protectedKeywordMatches,
+        } : {}),
+      };
+      merged.riskFlags = Array.from(new Set([
+        ...previous.riskFlags.filter(flag => flag !== 'current_chat' && flag !== 'low_confidence_selector'),
+        ...candidate.riskFlags.filter(flag => flag !== 'low_confidence_selector' || !previousContentSignals),
+      ]));
+      merged.score = previous.score;
+      merged.recommendation = decision ? 'protected' : previous.recommendation;
+      merged.selectedAction = decision ? 'none' : previous.selectedAction;
+      merged.matchedRuleIds = previous.matchedRuleIds;
+      merged.matchedRuleNames = previous.matchedRuleNames;
+      merged.status = previous.status;
+    }
+    map.set(key, merged);
   }
   await chrome.storage.local.set({
     tidygptCandidates: Array.from(map.values()),
@@ -241,6 +274,151 @@ async function scanPlatformHistory(platform: PlatformId, candidates: Conversatio
   }
 }
 
+function hasRuleConditions(rule: CustomRule) {
+  return Object.values(rule.conditions).some(value => value !== undefined && value !== false && value !== '');
+}
+
+function inspectRuleRequirements(
+  candidate: ConversationCandidate,
+  conditions: RuleConditions,
+  bodyText: string,
+  hasBackup: boolean,
+) {
+  const missing = new Set<string>();
+  const title = (candidate.title || '').toLocaleLowerCase();
+  if (conditions.titleContains && !title.includes(conditions.titleContains.toLocaleLowerCase())) return { possible: false, missing };
+  if (conditions.titleDoesNotContain && title.includes(conditions.titleDoesNotContain.toLocaleLowerCase())) return { possible: false, missing };
+  if (conditions.titleRegex) {
+    try { if (!new RegExp(conditions.titleRegex, 'i').test(candidate.title || '')) return { possible: false, missing }; }
+    catch { return { possible: false, missing }; }
+  }
+
+  const checkNumber = (condition: number | undefined, actual: number | undefined, kind: 'max' | 'min', reason: string) => {
+    if (condition == null) return true;
+    if (actual == null) { missing.add(reason); return true; }
+    return kind === 'max' ? actual <= condition : actual >= condition;
+  };
+  if (!checkNumber(conditions.maxUserMessages, candidate.counts.userMessages, 'max', 'message counts')) return { possible: false, missing };
+  if (!checkNumber(conditions.minUserMessages, candidate.counts.userMessages, 'min', 'message counts')) return { possible: false, missing };
+  if (!checkNumber(conditions.maxTotalMessages, candidate.counts.totalMessages, 'max', 'message counts')) return { possible: false, missing };
+  if (!checkNumber(conditions.minTotalMessages, candidate.counts.totalMessages, 'min', 'message counts')) return { possible: false, missing };
+  if (!checkNumber(conditions.olderThanDays, candidate.dates.ageDays, 'min', 'conversation age')) return { possible: false, missing };
+  if (!checkNumber(conditions.newerThanDays, candidate.dates.ageDays, 'max', 'conversation age')) return { possible: false, missing };
+  if (!checkNumber(conditions.maxContentLength, candidate.contentLength, 'max', 'content length')) return { possible: false, missing };
+  if (!checkNumber(conditions.minContentLength, candidate.contentLength, 'min', 'content length')) return { possible: false, missing };
+
+  if (conditions.bodyContains || conditions.bodyDoesNotContain || conditions.bodyRegex) {
+    if (!hasBackup) missing.add('conversation text');
+    else {
+      const body = bodyText.toLocaleLowerCase();
+      if (conditions.bodyContains && !body.includes(conditions.bodyContains.toLocaleLowerCase())) return { possible: false, missing };
+      if (conditions.bodyDoesNotContain && body.includes(conditions.bodyDoesNotContain.toLocaleLowerCase())) return { possible: false, missing };
+      if (conditions.bodyRegex) {
+        try { if (!new RegExp(conditions.bodyRegex, 'i').test(bodyText)) return { possible: false, missing }; }
+        catch { return { possible: false, missing }; }
+      }
+    }
+  }
+
+  const checkAbsent = (enabled: boolean | undefined, actual: boolean | 'unknown', reason: string) => {
+    if (!enabled) return true;
+    if (actual === 'unknown') { missing.add(reason); return true; }
+    return actual === false;
+  };
+  if (!checkAbsent(conditions.noFiles, candidate.signals.hasFile, 'file detection')) return { possible: false, missing };
+  if (!checkAbsent(conditions.noCode, candidate.signals.hasCode, 'code detection')) return { possible: false, missing };
+  if (!checkAbsent(conditions.noImages, candidate.signals.hasImage, 'image detection')) return { possible: false, missing };
+  if (!checkAbsent(conditions.noArtifacts, candidate.signals.hasArtifact, 'artifact detection')) return { possible: false, missing };
+  if (!checkAbsent(conditions.noProject, candidate.signals.isProject, 'project detection')) return { possible: false, missing };
+  return { possible: true, missing };
+}
+
+function actionNeedsSafetyRead(candidate: ConversationCandidate, settings: CleanerSettings, decision: 'archive' | 'delete' | 'keep' | 'none', hasBackup: boolean) {
+  const reasons: string[] = [];
+  if (decision !== 'archive' && decision !== 'delete') return reasons;
+  if (decision === 'delete' && settings.backupBeforeDelete !== false && !hasBackup) reasons.push('pre-delete backup');
+  if (settings.protectedKeywords.length && !hasBackup) reasons.push('protected words');
+  if (settings.fileBehavior === 'block' && candidate.signals.hasFile === 'unknown') reasons.push('file protection');
+  if (settings.codeBehavior === 'block' && candidate.signals.hasCode === 'unknown') reasons.push('code protection');
+  if (settings.imageBehavior === 'block' && candidate.signals.hasImage === 'unknown') reasons.push('image protection');
+  if (settings.projectBehavior === 'block' && (candidate.signals.isProject === 'unknown' || candidate.signals.hasArtifact === 'unknown')) reasons.push('project protection');
+  return reasons;
+}
+
+async function prepareRuleAudit() {
+  const data = await chrome.storage.local.get(['tidygptCandidates', 'tidygptRules']);
+  const candidates = (data.tidygptCandidates || []) as ConversationCandidate[];
+  const settings = { ...defaultSettings, ...(await getSettings()) };
+  const rules: RulesConfig = {
+    builtInSettings: settings,
+    customRules: ((data.tidygptRules || []) as CustomRule[]).filter(rule => rule.enabled !== false && hasRuleConditions(rule)),
+  };
+  const toRead: ConversationCandidate[] = [];
+  const reasonCounts = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    const backup = await getConversationBackup(candidateKey(candidate));
+    const bodyText = backup?.messages.map(message => message.text).join('\n') || '';
+    const localCandidate: ConversationCandidate = backup ? {
+      ...candidate,
+      contentLength: candidate.contentLength ?? bodyText.length,
+      counts: {
+        ...candidate.counts,
+        userMessages: candidate.counts.userMessages ?? backup.messages.filter(message => message.role === 'user').length,
+        assistantMessages: candidate.counts.assistantMessages ?? backup.messages.filter(message => message.role === 'assistant').length,
+        totalMessages: candidate.counts.totalMessages ?? backup.messages.length,
+      },
+    } : candidate;
+    const candidateReasons = new Set<string>();
+    for (const rule of rules.customRules) {
+      const inspected = inspectRuleRequirements(localCandidate, rule.conditions, bodyText, !!backup);
+      if (!inspected.possible) continue;
+      for (const reason of inspected.missing) candidateReasons.add(reason);
+    }
+    if (!candidateReasons.size) {
+      const evaluation = evaluateRulesDetailed(localCandidate, rules, bodyText);
+      for (const reason of actionNeedsSafetyRead(localCandidate, settings, evaluation.decision, !!backup)) candidateReasons.add(reason);
+    }
+    if (candidateReasons.size) {
+      toRead.push(candidate);
+      for (const reason of candidateReasons) reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+    }
+  }
+
+  const plan = {
+    createdAt: new Date().toISOString(),
+    candidateKeys: toRead.map(candidateKey),
+    totalDiscovered: candidates.length,
+    pagesToOpen: toRead.length,
+    alreadyLocal: candidates.length - toRead.length,
+    byPlatform: Object.fromEntries((['chatgpt', 'claude', 'gemini'] as PlatformId[]).map(platform => [platform, toRead.filter(candidate => (candidate.platform || 'chatgpt') === platform).length])),
+    reasons: Object.fromEntries(reasonCounts),
+  };
+  await chrome.storage.local.set({ tidygptPendingAuditPlan: plan });
+  return plan;
+}
+
+async function runPlannedAudit() {
+  if (plannedAuditRunning || contentScanRunning) throw new Error('An audit scan is already running');
+  plannedAuditRunning = true;
+  try {
+    const data = await chrome.storage.local.get(['tidygptPendingAuditPlan', 'tidygptCandidates']);
+    const plan = data.tidygptPendingAuditPlan as { candidateKeys?: string[] } | undefined;
+    const keys = new Set(plan?.candidateKeys || []);
+    const candidates = ((data.tidygptCandidates || []) as ConversationCandidate[]).filter(candidate => keys.has(candidateKey(candidate)));
+    for (const platform of ['chatgpt', 'claude', 'gemini'] as PlatformId[]) {
+      const platformCandidates = candidates.filter(candidate => (candidate.platform || 'chatgpt') === platform);
+      if (!platformCandidates.length) continue;
+      await scanPlatformHistory(platform, platformCandidates);
+      if (contentScanCancelled) return;
+    }
+    await runRuleAudit();
+    await chrome.storage.local.remove('tidygptPendingAuditPlan');
+  } finally {
+    plannedAuditRunning = false;
+  }
+}
+
 async function runRuleAudit() {
   const data = await chrome.storage.local.get(['tidygptCandidates', 'tidygptRules', 'tidygptSavedDecisions']);
   const candidates = (data.tidygptCandidates || []) as ConversationCandidate[];
@@ -250,13 +428,18 @@ async function runRuleAudit() {
     customRules: Array.isArray(data.tidygptRules) ? data.tidygptRules : [],
   };
   const saved = new Map(((data.tidygptSavedDecisions || []) as SavedConversationDecision[]).map(item => [item.providerKey, item]));
+  const rulesNeedConversationData = rules.customRules.some(rule => {
+    const { titleContains, titleDoesNotContain, titleRegex, ...conversationConditions } = rule.conditions;
+    void titleContains; void titleDoesNotContain; void titleRegex;
+    return Object.values(conversationConditions).some(value => value !== undefined && value !== false && value !== '');
+  });
   let missingContent = 0;
   let unsupportedArchive = 0;
 
   const audited = await Promise.all(candidates.map(async candidate => {
     const key = candidateKey(candidate);
     const backup = await getConversationBackup(key);
-    if (!backup) missingContent++;
+    if (!backup && rulesNeedConversationData) missingContent++;
     const bodyText = backup?.messages.map(message => message.text).join('\n') ?? '';
     const protectedHaystack = `${candidate.title || ''}\n${bodyText}`.toLocaleLowerCase();
     const protectedMatches = settings.protectedKeywords.filter(keyword =>
@@ -266,6 +449,13 @@ async function runRuleAudit() {
     if (protectedMatches.length) riskFlags.push('protected_keyword');
     const evaluatedCandidate: ConversationCandidate = {
       ...candidate,
+      contentLength: candidate.contentLength ?? (backup ? bodyText.length : undefined),
+      counts: backup ? {
+        ...candidate.counts,
+        userMessages: candidate.counts.userMessages ?? backup.messages.filter(message => message.role === 'user').length,
+        assistantMessages: candidate.counts.assistantMessages ?? backup.messages.filter(message => message.role === 'assistant').length,
+        totalMessages: candidate.counts.totalMessages ?? backup.messages.length,
+      } : candidate.counts,
       signals: { ...candidate.signals, protectedKeywordMatches: protectedMatches },
       riskFlags,
     };
@@ -407,9 +597,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })).then(sendResponse); return true;
   }
   if (message.type === 'START_CONTENT_SCAN') {
-    if (contentScanRunning) { sendResponse({ ok: false, error: 'A content scan is already running' }); return false; }
-    scanPlatformHistory(message.payload.platform, message.payload.candidates);
-    sendResponse({ ok: true }); return false;
+    sendResponse({ ok: false, error: 'Direct full-history reading is disabled. Prepare and approve an audit plan first.' }); return false;
   }
   if (message.type === 'CANCEL_CONTENT_SCAN') {
     if (!contentScanRunning) { sendResponse({ ok: false, error: 'No content scan is running' }); return false; }
@@ -423,15 +611,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch(error => sendResponse({ ok: false, error: error.message }));
     return true;
   }
+  if (message.type === 'PREPARE_RULE_AUDIT') {
+    if (contentScanRunning || plannedAuditRunning) { sendResponse({ ok: false, error: 'Another audit scan is already running' }); return false; }
+    prepareRuleAudit().then(plan => sendResponse({ ok: true, plan }))
+      .catch(error => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message.type === 'START_PLANNED_AUDIT') {
+    if (contentScanRunning || plannedAuditRunning) { sendResponse({ ok: false, error: 'Another audit scan is already running' }); return false; }
+    runPlannedAudit().catch(error => chrome.storage.local.set({
+      tidygptScanProgress: { status: 'failed', error: error.message },
+    }));
+    sendResponse({ ok: true }); return false;
+  }
   if (message.type === 'DISCOVERY_PROGRESS') {
-    chrome.storage.local.set({ tidygptDiscoveryProgress: message.payload });
+    chrome.storage.local.set({
+      tidygptDiscoveryProgress: message.payload,
+      ...(message.payload?.status === 'discovering' ? { tidygptScanProgress: { status: 'idle', completed: 0, total: 0 } } : {}),
+    });
     sendResponse({ ok: true }); return false;
   }
   if (message.type === 'OPEN_DASHBOARD') {
     chrome.runtime.openOptionsPage(); sendResponse({ ok: true }); return false;
   }
   if (message.type === 'EXECUTE_ACTION_PLAN') {
-    if (contentScanRunning) { sendResponse({ ok: false, error: 'Wait for the content scan to finish before executing actions' }); return false; }
+    if (contentScanRunning || plannedAuditRunning) { sendResponse({ ok: false, error: 'Wait for the audit scan to finish before executing actions' }); return false; }
     if (activeJobId) { sendResponse({ ok: false, error: 'Another cleanup job is already running' }); return false; }
     runJob(message.payload.jobId); sendResponse({ ok: true }); return false;
   }

@@ -37,7 +37,7 @@ function discoverVisibleChats(): ConversationCandidate[] {
     const providerKey = `${platform}:${id}`;
     candidates.push({
       id, providerKey, platform, idHash: providerKey, title, url: link.href,
-      source: "live_ui", sourceConfidence: 0.75,
+      source: "live_ui", sourceConfidence: 0.85,
       dates: { dateConfidence: 0 }, counts: { countConfidence: 0 },
       signals: {
         genericTitle: /^(new chat|nouvelle discussion|untitled)$/i.test(title),
@@ -45,7 +45,7 @@ function discoverVisibleChats(): ConversationCandidate[] {
         hasArtifact: "unknown", isProject: "unknown", isCurrentChat: currentId === id,
         protectedKeywordMatches: [],
       },
-      score: emptyScore(0.75),
+      score: emptyScore(0.85),
       riskFlags: currentId === id ? ["current_chat"] : ["low_confidence_selector"],
       recommendation: "uncertain", selectedAction: "none", status: "discovered",
     });
@@ -249,10 +249,7 @@ function injectTidyGPTBadge() {
         settings?.deepScanMaxScrollPages ?? 5,
       );
       await saveCandidates(candidates);
-      badge.textContent = `Reading ${candidates.length} chats…`;
-      const queued = await chrome.runtime.sendMessage({ type: 'START_CONTENT_SCAN', payload: { platform, candidates } });
-      if (!queued?.ok) throw new Error(queued?.error || 'Could not start content scan');
-      badge.textContent = `Queued ${candidates.length} chats`;
+      badge.textContent = `Found ${candidates.length} · open Dashboard to audit`;
     } catch (error: any) {
       badge.textContent = `Scan failed: ${error?.message ?? 'unknown error'}`;
     } finally {

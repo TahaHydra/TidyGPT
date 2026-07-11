@@ -23,23 +23,46 @@ export function RulesTab({ onAuditComplete }: { onAuditComplete?: () => void }) 
   const [status, setStatus] = useState('');
   const [auditing, setAuditing] = useState(false);
   const [summary, setSummary] = useState<any>(null);
+  const [pendingPlan, setPendingPlan] = useState<any>(null);
 
   useEffect(() => {
     getSettings().then(value => setSettings({ ...defaultSettings, ...value }));
-    chrome.storage.local.get(['tidygptRules', 'tidygptSavedDecisions', 'tidygptAuditSummary']).then(data => {
+    chrome.storage.local.get(['tidygptRules', 'tidygptSavedDecisions', 'tidygptAuditSummary', 'tidygptPendingAuditPlan']).then(data => {
       if (Array.isArray(data.tidygptRules)) setRules(data.tidygptRules);
       setSaved(data.tidygptSavedDecisions || []);
       setSummary(data.tidygptAuditSummary || null);
+      setPendingPlan(data.tidygptPendingAuditPlan || null);
     });
+    const listener = (changes: any, area: string) => {
+      if (area !== 'local') return;
+      if (changes.tidygptAuditSummary) {
+        setSummary(changes.tidygptAuditSummary.newValue || null);
+        setPendingPlan(null);
+        setAuditing(false);
+        setStatus('Audit complete. Nothing has been changed online. Review the staged plan before running it.');
+        onAuditComplete?.();
+      }
+      const scanStatus = changes.tidygptScanProgress?.newValue?.status;
+      if (['cancelled', 'rate_limited_stopped', 'failed'].includes(scanStatus)) {
+        setAuditing(false);
+        setStatus(`Audit reading stopped: ${changes.tidygptScanProgress.newValue.error || scanStatus}`);
+      }
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
 
   function updateSettings(updates: Partial<CleanerSettings>) {
     const next = { ...settings, ...updates };
     setSettings(next);
     saveSettings(next);
+    chrome.storage.local.remove('tidygptPendingAuditPlan');
+    setPendingPlan(null);
   }
 
   function updateRule(id: string, updates: Partial<CustomRule>) {
+    setPendingPlan(null);
+    chrome.storage.local.remove('tidygptPendingAuditPlan');
     setRules(current => current.map(rule => rule.id === id ? { ...rule, ...updates } : rule));
   }
 
@@ -48,11 +71,19 @@ export function RulesTab({ onAuditComplete }: { onAuditComplete?: () => void }) 
   }
 
   function addRule() {
+    setPendingPlan(null);
+    chrome.storage.local.remove('tidygptPendingAuditPlan');
     const id = crypto.randomUUID();
     setRules(current => [...current, {
       id, name: `Rule ${current.length + 1}`, type: 'archive', enabled: true,
       conditions: { maxTotalMessages: 20 },
     }]);
+  }
+
+  function removeRule(id: string) {
+    setPendingPlan(null);
+    chrome.storage.local.remove('tidygptPendingAuditPlan');
+    setRules(current => current.filter(item => item.id !== id));
   }
 
   async function saveRules() {
@@ -69,6 +100,8 @@ export function RulesTab({ onAuditComplete }: { onAuditComplete?: () => void }) 
       }
     }
     await chrome.storage.local.set({ tidygptRules: valid });
+    await chrome.storage.local.remove('tidygptPendingAuditPlan');
+    setPendingPlan(null);
     await saveSettings(settings);
     setRules(valid);
     setStatus('Rules saved. Run an audit to see and stage the exact result.');
@@ -79,15 +112,41 @@ export function RulesTab({ onAuditComplete }: { onAuditComplete?: () => void }) 
     setAuditing(true);
     setStatus('');
     if (!await saveRules()) { setAuditing(false); return; }
-    const response = await chrome.runtime.sendMessage({ type: 'RUN_RULE_AUDIT' });
+    const response = await chrome.runtime.sendMessage({ type: 'PREPARE_RULE_AUDIT' });
     setAuditing(false);
     if (!response?.ok) {
       setStatus(`Audit failed: ${response?.error || 'unknown error'}`);
       return;
     }
-    setSummary(response.summary);
-    setStatus('Audit complete. Nothing has been changed online. Review the staged plan before running it.');
+    if (response.plan.pagesToOpen > 0) {
+      setPendingPlan(response.plan);
+      setStatus('Audit plan ready. No conversation pages have been opened. Review the plan below.');
+      return;
+    }
+    setAuditing(true);
+    const audited = await chrome.runtime.sendMessage({ type: 'RUN_RULE_AUDIT' });
+    setAuditing(false);
+    if (!audited?.ok) { setStatus(`Audit failed: ${audited?.error || 'unknown error'}`); return; }
+    setSummary(audited.summary);
+    setStatus('Title/local-data audit complete. Zero conversation pages were opened.');
     onAuditComplete?.();
+  }
+
+  async function approvePlannedAudit() {
+    setAuditing(true);
+    const response = await chrome.runtime.sendMessage({ type: 'START_PLANNED_AUDIT' });
+    if (!response?.ok) {
+      setAuditing(false);
+      setStatus(`Audit failed: ${response?.error || 'unknown error'}`);
+      return;
+    }
+    setStatus(`Approved. Reading only ${pendingPlan.pagesToOpen} required conversation page(s), with throttling and cooldowns.`);
+  }
+
+  async function discardPlan() {
+    await chrome.storage.local.remove('tidygptPendingAuditPlan');
+    setPendingPlan(null);
+    setStatus('Audit plan cancelled. No conversation pages were opened.');
   }
 
   function addKeyword() {
@@ -145,16 +204,34 @@ export function RulesTab({ onAuditComplete }: { onAuditComplete?: () => void }) 
       <div style={{ display: 'grid', gap: 14 }}>
         {rules.map((rule, index) => (
           <RuleCard key={rule.id} rule={rule} index={index} onChange={updates => updateRule(rule.id, updates)}
-            onConditions={conditions => updateConditions(rule.id, conditions)} onDelete={() => setRules(current => current.filter(item => item.id !== rule.id))} />
+            onConditions={conditions => updateConditions(rule.id, conditions)} onDelete={() => removeRule(rule.id)} />
         ))}
         {!rules.length && <div style={{ ...card, color: '#71717a', textAlign: 'center' }}>No cleanup rules. Add one to begin.</div>}
       </div>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '18px 0' }}>
         <button onClick={saveRules} style={button}>Save rules</button>
-        <button onClick={runAudit} disabled={auditing} style={{ ...button, background: '#2563eb', borderColor: '#2563eb' }}>{auditing ? 'Auditing…' : 'Run safe audit'}</button>
-        {status && <span style={{ color: status.startsWith('Audit failed') ? '#fca5a5' : '#a7f3d0', fontSize: 12 }}>{status}</span>}
+        <button onClick={runAudit} disabled={auditing} style={{ ...button, background: '#2563eb', borderColor: '#2563eb' }}>{auditing ? 'Auditing…' : 'Prepare safe audit'}</button>
+        {status && <span style={{ color: /failed|stopped/i.test(status) ? '#fca5a5' : '#a7f3d0', fontSize: 12 }}>{status}</span>}
       </div>
+
+      {pendingPlan && <div style={{ ...card, marginBottom: 16, borderColor: '#92400e', background: '#17130c' }}>
+        <h3 style={{ margin: '0 0 6px', fontSize: 15, color: '#fde68a' }}>Approval required before opening conversations</h3>
+        <p style={{ color: '#d4d4d8', fontSize: 13, lineHeight: 1.5, margin: '0 0 12px' }}>
+          The rules can audit {pendingPlan.alreadyLocal} of {pendingPlan.totalDiscovered} conversations from titles or already-saved local data. They require opening <strong style={{ color: '#fca5a5' }}>{pendingPlan.pagesToOpen}</strong> conversation page(s) to obtain missing information.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {Object.entries(pendingPlan.byPlatform || {}).map(([platform, count]) => Number(count) > 0 && <span key={platform} style={{ padding: '4px 8px', background: '#09090b', borderRadius: 5, fontSize: 12 }}>{platform}: {String(count)}</span>)}
+        </div>
+        <div style={{ color: '#a1a1aa', fontSize: 12, marginBottom: 14 }}>
+          Why pages are needed: {Object.entries(pendingPlan.reasons || {}).map(([reason, count]) => `${reason} (${count})`).join(' · ') || 'missing conversation data'}
+          <br />Estimated minimum time with safe pacing: about {Math.max(1, Math.ceil((pendingPlan.pagesToOpen * 5.5 + Math.floor(pendingPlan.pagesToOpen / 20) * 30) / 60))} minute(s).
+        </div>
+        <div style={{ display: 'flex', gap: 9 }}>
+          <button onClick={approvePlannedAudit} disabled={auditing} style={{ ...button, background: '#b45309', borderColor: '#d97706' }}>{auditing ? 'Reading approved pages…' : `Approve reading ${pendingPlan.pagesToOpen} page(s)`}</button>
+          <button onClick={discardPlan} disabled={auditing} style={button}>Cancel — read nothing</button>
+        </div>
+      </div>}
 
       {summary && <div style={{ ...card, marginBottom: 16, borderColor: '#1e3a8a' }}>
         <h3 style={{ margin: '0 0 12px', fontSize: 15 }}>Latest audit — no online changes made</h3>

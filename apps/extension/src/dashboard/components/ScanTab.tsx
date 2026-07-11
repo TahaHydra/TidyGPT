@@ -103,7 +103,7 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
     <div>
       <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 20px", letterSpacing: "-0.01em" }}>Scan & Import</h2>
       
-      {progress && (
+      {progress && progress.status !== 'idle' && (
         <div style={{ marginBottom: 18, padding: "12px 16px", background: "#111827", border: "1px solid #1e3a5f", borderRadius: 8, color: "#bfdbfe", fontSize: 13 }}>
           {progress.platform?.toUpperCase()} content scan: {progress.status}
           {typeof progress.total === 'number' && ` · ${progress.completed ?? 0}/${progress.total}`}
@@ -128,9 +128,9 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
         {/* Live UI Scanner */}
         <div style={{ padding: 24, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
           <div>
-            <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>Live Multi-AI Scanner</h3>
+            <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>Safe sidebar discovery</h3>
             <p style={{ color: "#71717a", fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>
-              Open ChatGPT, Claude, or Gemini and click its floating TidyGPT button. Discovery scrolls the configured number of sidebar pages, then a private inactive tab reads conversations slowly with cooldowns and stores local pre-delete backups.
+              Open ChatGPT, Claude, or Gemini and click its floating TidyGPT button. This step reads only visible sidebar titles and URLs. It never opens conversation pages. Rules & audit will calculate any deeper reading needed and ask for approval first.
             </p>
           </div>
           <div style={{ padding: "12px 14px", background: "#18181b", borderRadius: 6, color: "#a1a1aa", fontSize: 12, border: "1px solid #27272a", textAlign: "center" }}>
