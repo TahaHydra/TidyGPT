@@ -13,6 +13,11 @@ export type CleanerSettings = {
   
   // Exclusions
   protectedKeywords: string[];
+
+  // Live content scan
+  contentScanMessageLimit?: number;
+  deepScanIdleRounds?: number;
+  backupBeforeDelete?: boolean;
   
   // Execution Safety
   minSelectorConfidence: number; // e.g. 0.8
@@ -34,6 +39,9 @@ export const defaultSettings: CleanerSettings = {
   fileBehavior: "block",
   projectBehavior: "block",
   protectedKeywords: [],
+  contentScanMessageLimit: 20,
+  deepScanIdleRounds: 5,
+  backupBeforeDelete: true,
   minSelectorConfidence: 0.8,
   delayMinMs: 1000,
   delayMaxMs: 3000,

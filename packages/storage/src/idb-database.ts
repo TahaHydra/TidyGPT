@@ -1,5 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
-import type { CleanupJob, ConversationCandidate, CleanerSettings, LogEntry } from '@tidygpt/shared';
+import type { CleanupJob, ConversationBackup, CleanerSettings, LogEntry } from '@tidygpt/shared';
 
 interface SweeperDB extends DBSchema {
   jobs: {
@@ -15,13 +15,18 @@ interface SweeperDB extends DBSchema {
     value: LogEntry;
     indexes: { 'by-job': string };
   };
+  backups: {
+    key: string;
+    value: ConversationBackup;
+    indexes: { 'by-platform': string };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<SweeperDB>> | null = null;
 
 export async function getDB() {
   if (!dbPromise) {
-    dbPromise = openDB<SweeperDB>('ChatSweeperDB', 3, {
+    dbPromise = openDB<SweeperDB>('ChatSweeperDB', 4, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
           db.createObjectStore('jobs', { keyPath: 'jobId' });
@@ -37,6 +42,10 @@ export async function getDB() {
             db.deleteObjectStore('jobs');
           }
           db.createObjectStore('jobs', { keyPath: 'jobId' });
+        }
+        if (oldVersion < 4) {
+          const backups = db.createObjectStore('backups', { keyPath: 'providerKey' });
+          backups.createIndex('by-platform', 'platform');
         }
       },
     });
@@ -93,4 +102,19 @@ export async function getLogsByJob(jobId: string): Promise<LogEntry[]> {
 export async function getAllLogs(): Promise<LogEntry[]> {
   const db = await getDB();
   return db.getAll('logs');
+}
+
+export async function saveConversationBackup(backup: ConversationBackup) {
+  const db = await getDB();
+  await db.put('backups', backup);
+}
+
+export async function getConversationBackup(providerKey: string): Promise<ConversationBackup | undefined> {
+  const db = await getDB();
+  return db.get('backups', providerKey);
+}
+
+export async function getConversationBackups(providerKeys: string[]): Promise<ConversationBackup[]> {
+  const backups = await Promise.all(providerKeys.map(getConversationBackup));
+  return backups.filter((item): item is ConversationBackup => !!item);
 }

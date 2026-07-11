@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { calculateScore, classifyScore } from './score-engine';
+import { evaluateRules } from './rule-engine';
 import type { CleanerSettings } from '@tidygpt/shared';
 
 describe('Score Engine', () => {
@@ -60,5 +61,32 @@ describe('Score Engine', () => {
     const score = calculateScore(candidate, defaultSettings);
     const classification = classifyScore(score, defaultSettings);
     expect(classification).toBe("archive_candidate");
+  });
+
+  it('applies body rules to live content text', () => {
+    const result = evaluateRules(
+      { title: 'Ordinary title', contentLength: 42 },
+      {
+        builtInSettings: defaultSettings,
+        customRules: [{
+          id: 'protect-client', name: 'Keep client work', type: 'keep',
+          conditions: { bodyRegex: 'client[- ]alpha', minContentLength: 10 },
+        }],
+      },
+      'Notes for Client Alpha'
+    );
+    expect(result).toBe('keep');
+  });
+
+  it('ignores invalid custom regex safely', () => {
+    const result = evaluateRules(
+      { title: 'Anything' },
+      {
+        builtInSettings: defaultSettings,
+        customRules: [{ id: 'bad', name: 'Bad regex', type: 'delete', conditions: { bodyRegex: '[' } }],
+      },
+      'content'
+    );
+    expect(result).toBe('none');
   });
 });

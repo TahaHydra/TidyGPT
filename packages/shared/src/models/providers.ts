@@ -44,3 +44,13 @@ export interface ActionProvider {
   delete(id: string): Promise<import('./job').ActionResult>;
   verify(id: string, expected: "archived" | "deleted"): Promise<VerifyResult>;
 }
+
+export type ConversationBackup = {
+  providerKey: string;
+  platform: import('./conversation').PlatformId;
+  id: string;
+  title: string;
+  url?: string;
+  capturedAt: string;
+  messages: Array<{ role: "user" | "assistant" | "unknown"; text: string }>;
+};

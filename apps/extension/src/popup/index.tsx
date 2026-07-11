@@ -13,7 +13,7 @@ function Popup() {
     
     // Check content script health by pinging active tab
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id && tabs[0].url?.includes("chatgpt.com")) {
+      if (tabs[0]?.id && /(^|\.)((chatgpt\.com)|(chat\.openai\.com)|(claude\.ai)|(gemini\.google\.com))$/i.test(new URL(tabs[0].url || 'https://invalid.local').hostname)) {
         chrome.tabs.sendMessage(tabs[0].id, { type: 'PING' }, (response) => {
           if (chrome.runtime.lastError) {
             setHealth("Script not loaded");
@@ -22,7 +22,7 @@ function Popup() {
           }
         });
       } else {
-        setHealth("Not on chatgpt.com");
+        setHealth("Open a supported AI");
       }
     });
   }
@@ -90,7 +90,7 @@ function Popup() {
       </div>
 
       <p style={{ margin: "14px 0 0", color: "#3f3f46", fontSize: 11, textAlign: "center", lineHeight: 1.4 }}>
-        {health.includes("Not on") ? "Navigate to chatgpt.com to start scanning." : "Use the floating button in ChatGPT sidebar to scan."}
+        {!isConnected ? "Open ChatGPT, Claude, or Gemini to start scanning." : "Use the floating TidyGPT button to scan this platform."}
       </p>
     </main>
   );

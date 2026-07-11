@@ -10,6 +10,11 @@ export type CustomRule = {
     titleContains?: string;
     titleDoesNotContain?: string;
     titleRegex?: string;
+    bodyContains?: string;
+    bodyDoesNotContain?: string;
+    bodyRegex?: string;
+    minContentLength?: number;
+    maxContentLength?: number;
     noProtectedKeywords?: boolean;
     noFiles?: boolean;
     noCode?: boolean;

@@ -61,24 +61,25 @@ export function DiagnosticsTab() {
             {health.error ? (
               <div style={{ color: "#f87171", fontSize: 13 }}>Failed to contact tab: {health.error}</div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
-                <div style={{ color: "#fafafa" }}>Target URL: <span style={{ color: "#60a5fa" }}>{health.url}</span></div>
-                <div style={{ color: "#71717a" }}>All automated DOM selectors were probed. Check statuses below.</div>
-              </div>
+              <div style={{ color: "#71717a", fontSize: 13 }}>Checked every open supported platform tab. Closed platforms are reported without failing the others.</div>
             )}
           </div>
         )}
 
         {/* Detailed Heuristics Grid */}
-        {health && !health.error && health.health && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-            <ProbeCard name="Sidebar Container" probe={health.health.sidebar} />
-            <ProbeCard name="Chat Sidebar Links" probe={health.health.chatLinks} />
-            <ProbeCard name="Menu Trigger Button" probe={health.health.menuTrigger} />
-            <ProbeCard name="Archive Menu Item" probe={health.health.archiveAction} />
-            <ProbeCard name="Delete Menu Item" probe={health.health.deleteAction} />
+        {Array.isArray(health) && health.map((result: any) => (
+          <div key={result.platform || result.url} style={{ padding: 16, background: "#111113", border: "1px solid #1e1e21", borderRadius: 8 }}>
+            <h3 style={{ margin: "0 0 10px", textTransform: "capitalize", fontSize: 14 }}>{result.platform || 'Platform'} {result.url && <span style={{ color: "#52525b", fontWeight: 400 }}>· {result.url}</span>}</h3>
+            {result.error ? <div style={{ color: "#f87171", fontSize: 12 }}>{result.error}</div> : result.health && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+                <ProbeCard name="Sidebar" probe={result.health.sidebar} />
+                <ProbeCard name="Conversation Links" probe={result.health.chatLinks} />
+                <ProbeCard name="Action Menu" probe={result.health.menuTrigger} />
+                <ProbeCard name="Delete Action" probe={result.health.deleteAction} />
+              </div>
+            )}
           </div>
-        )}
+        ))}
 
         {/* Informative placeholder */}
         {!health && (
@@ -86,7 +87,7 @@ export function DiagnosticsTab() {
             <div style={{ fontSize: 24, marginBottom: 8 }}>🔍</div>
             <h3 style={{ fontSize: 14, fontWeight: 600, margin: "0 0 4px" }}>No Diagnostic Run</h3>
             <p style={{ color: "#71717a", fontSize: 13, maxWidth: 400, margin: "0 auto" }}>
-              Run diagnostics to probe selector health on chatgpt.com. This detects if OpenAI made breaking changes to their HTML classnames or structure.
+              Run diagnostics to probe selector health on every open ChatGPT, Claude, and Gemini tab.
             </p>
           </div>
         )}

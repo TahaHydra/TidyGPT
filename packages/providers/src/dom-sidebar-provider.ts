@@ -1,9 +1,11 @@
 import type { ConversationProvider, ProviderHealth, ConversationPage, ConversationFull } from '@tidygpt/shared';
-import { Selectors } from '@tidygpt/ui-automation';
+import { getPlatformAdapter, parseConversationId } from '@tidygpt/ui-automation';
+import type { PlatformId } from '@tidygpt/shared';
 
 export class DomSidebarProvider implements ConversationProvider {
   id = 'dom_sidebar_provider';
-  label = 'Live UI Scanner Engine';
+  label = 'Multi-platform Live UI Scanner';
+  constructor(private platform?: PlatformId) {}
   capabilities = {
     listConversations: true,
     readConversation: false,
@@ -14,10 +16,11 @@ export class DomSidebarProvider implements ConversationProvider {
   };
 
   async healthCheck(): Promise<ProviderHealth> {
-    const sidebarExists = !!document.querySelector(Selectors.Sidebar.Container);
+    const adapter = getPlatformAdapter(this.platform);
+    const sidebarExists = !!document.querySelector(adapter.sidebar);
     return {
       ok: sidebarExists,
-      version: 'DOM-based',
+      version: `DOM-based/${adapter.id}`,
       source: 'dom',
       capabilities: ['listConversations'],
       warnings: sidebarExists ? [] : ['Sidebar not found'],
@@ -26,10 +29,11 @@ export class DomSidebarProvider implements ConversationProvider {
   }
 
   async listConversations(cursor?: string): Promise<ConversationPage> {
-    const links = Array.from(document.querySelectorAll(Selectors.Sidebar.ChatLink)) as HTMLAnchorElement[];
-    const conversations = links.map(link => {
-      const url = new URL(link.href);
-      const id = url.pathname.replace('/c/', '');
+    const adapter = getPlatformAdapter(this.platform);
+    const links = Array.from(document.querySelectorAll(adapter.conversationLink)) as HTMLAnchorElement[];
+    const conversations = links.flatMap(link => {
+      const id = parseConversationId(link.href, adapter);
+      if (!id) return [];
       return {
         id,
         title: link.textContent || 'Untitled'
@@ -39,6 +43,6 @@ export class DomSidebarProvider implements ConversationProvider {
   }
 
   async readConversation(id: string): Promise<ConversationFull> {
-    throw new Error('DomSidebarProvider cannot read full conversation context.');
+    throw new Error('Use the extension content-scan pass to read full live conversation context.');
   }
 }

@@ -7,6 +7,9 @@ export function OverviewTab({ candidates }: { candidates: ConversationCandidate[
   const protectedCount = candidates.filter(c => c.recommendation === "protected").length;
   const ignoreCount = candidates.filter(c => c.recommendation === "ignore" || !c.recommendation).length;
   const pendingActions = candidates.filter(c => c.selectedAction && c.selectedAction !== "none").length;
+  const chatgptCount = candidates.filter(c => (c.platform ?? "chatgpt") === "chatgpt").length;
+  const claudeCount = candidates.filter(c => c.platform === "claude").length;
+  const geminiCount = candidates.filter(c => c.platform === "gemini").length;
 
   return (
     <div>
@@ -21,6 +24,12 @@ export function OverviewTab({ candidates }: { candidates: ConversationCandidate[
         <StatCard title="Ignored" value={ignoreCount} color="#71717a" accent="#27272a" />
       </div>
 
+      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(3, minmax(120px, 1fr))", gap: 12 }}>
+        <StatCard title="ChatGPT" value={chatgptCount} color="#74aa9c" />
+        <StatCard title="Claude" value={claudeCount} color="#d97757" />
+        <StatCard title="Gemini" value={geminiCount} color="#8ab4f8" />
+      </div>
+
       {pendingActions > 0 && (
         <div style={{ marginTop: 16, padding: "12px 16px", background: "#1a1a2e", border: "1px solid #27274a", borderRadius: 8, fontSize: 13, color: "#a5b4fc" }}>
           {pendingActions} conversation{pendingActions !== 1 ? "s" : ""} queued for action. Go to the <strong>Actions</strong> tab to execute.
@@ -32,7 +41,7 @@ export function OverviewTab({ candidates }: { candidates: ConversationCandidate[
         <div style={{ color: "#71717a", lineHeight: 1.8, fontSize: 13 }}>
           <div style={{ display: "flex", gap: 10, marginBottom: 6 }}>
             <span style={{ color: "#3f3f46", fontWeight: 600, minWidth: 18 }}>1.</span>
-            <span>Go to the <strong style={{ color: "#a1a1aa" }}>Scan</strong> tab to import a JSON export or use the live DOM scanner.</span>
+            <span>Open any supported AI and use its floating scan button, or import a ChatGPT JSON export.</span>
           </div>
           <div style={{ display: "flex", gap: 10, marginBottom: 6 }}>
             <span style={{ color: "#3f3f46", fontWeight: 600, minWidth: 18 }}>2.</span>

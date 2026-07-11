@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import type { ConversationCandidate, CleanerSettings } from "@tidygpt/shared";
 import { defaultSettings } from "@tidygpt/shared";
-import { saveJob, getSettings } from "@tidygpt/storage";
+import { saveJob, getSettings, getConversationBackups } from "@tidygpt/storage";
 
 export function ActionsTab({ candidates }: { candidates: ConversationCandidate[] }) {
   const [confirmDelete, setConfirmDelete] = useState("");
@@ -38,7 +38,8 @@ export function ActionsTab({ candidates }: { candidates: ConversationCandidate[]
 
   const handleExecute = async () => {
     const confirmStr = settings.deleteConfirmationString || "CONFIRM";
-    if (pendingDelete.length > 0 && confirmDelete !== confirmStr) {
+    const destructive = [...pendingDelete, ...pendingBoth];
+    if (destructive.length > 0 && confirmDelete !== confirmStr) {
       setError(`You must type "${confirmStr}" to execute deletes.`);
       return;
     }
@@ -47,12 +48,38 @@ export function ActionsTab({ candidates }: { candidates: ConversationCandidate[]
     
     const jobId = "job_" + Date.now();
     const actionQueue = [...pendingArchive, ...pendingDelete, ...pendingBoth];
+    let backupCreatedAt: string | undefined;
+
+    if (destructive.length > 0 && settings.backupBeforeDelete !== false) {
+      const keys = destructive.map(c => c.providerKey || `${c.platform || "chatgpt"}:${c.id}`);
+      const backups = await getConversationBackups(keys);
+      const backedUp = new Set(backups.map(item => item.providerKey));
+      const missing = keys.filter(key => !backedUp.has(key));
+      if (missing.length > 0) {
+        setError(`${missing.length} selected conversation(s) have no local content backup. Run a live content scan before deleting.`);
+        setRunning(false);
+        return;
+      }
+      backupCreatedAt = new Date().toISOString();
+      const payload = {
+        format: "tidygpt-backup-v1",
+        createdAt: backupCreatedAt,
+        conversations: backups,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `tidygpt-backup-${backupCreatedAt.replace(/[:.]/g, '-')}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    }
 
     // Construct and persist the CleanupJob to IDB before dispatching
     const job = {
       jobId,
       source: "live_ui" as const,
-      mode: "archive" as const,
+      mode: (pendingDelete.length || pendingBoth.length ? "delete" : "archive") as "archive" | "delete",
       status: "review_ready" as const,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -68,6 +95,7 @@ export function ActionsTab({ candidates }: { candidates: ConversationCandidate[]
       },
       results: [],
       errors: [],
+      backupCreatedAt,
     };
 
     try {
@@ -114,10 +142,10 @@ export function ActionsTab({ candidates }: { candidates: ConversationCandidate[]
           <p style={{ color: "#71717a", fontSize: 13 }}>No cleanup actions staged. Mark items in the <strong>Review</strong> tab first.</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {pendingDelete.length > 0 && (
+            {(pendingDelete.length > 0 || pendingBoth.length > 0) && (
               <div style={{ padding: 16, background: "#1c1010", border: "1px solid #450a0a", borderRadius: 6 }}>
                 <div style={{ color: "#fca5a5", fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Warning: Permanent Deletion</div>
-                <div style={{ color: "#f87171", fontSize: 12, marginBottom: 12 }}>You have selected {pendingDelete.length} conversations for permanent deletion. This cannot be undone. Type <strong style={{ color: "#fff" }}>{settings.deleteConfirmationString || "CONFIRM"}</strong> below to authorize.</div>
+                <div style={{ color: "#f87171", fontSize: 12, marginBottom: 12 }}>You have selected {pendingDelete.length + pendingBoth.length} conversations for permanent deletion. A local JSON backup will be created first. Type <strong style={{ color: "#fff" }}>{settings.deleteConfirmationString || "CONFIRM"}</strong> below to authorize.</div>
                 <input 
                   type="text" 
                   value={confirmDelete}

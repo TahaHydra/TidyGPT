@@ -6,6 +6,8 @@ export type CleanupClass =
   | "uncertain"
   | "delete_candidate";
 
+export type PlatformId = "chatgpt" | "claude" | "gemini";
+
 export type RiskFlag = 
   | "protected_keyword"
   | "current_chat"
@@ -32,6 +34,9 @@ export type CandidateScore = {
 
 export type ConversationCandidate = {
   id: string;
+  /** Stable cross-provider key. Provider-native ids are not globally unique. */
+  providerKey?: string;
+  platform?: PlatformId;
   idHash: string;
   title?: string;
   titleHash?: string;
@@ -74,6 +79,8 @@ export type ConversationCandidate = {
   selectedAction: "none" | "archive" | "delete" | "archive_then_delete";
 
   contentLength?: number;
+  contentScannedAt?: string;
+  backupAvailable?: boolean;
 
   status:
     | "discovered"

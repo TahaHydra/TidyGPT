@@ -17,6 +17,7 @@ export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCa
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("score_desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const keyOf = (c: ConversationCandidate) => c.providerKey || `${c.platform || "chatgpt"}:${c.id}`;
 
   const filteredAndSorted = useMemo(() => {
     let result = candidates.filter(c => {
@@ -51,7 +52,7 @@ export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCa
     if (selected.size === filteredAndSorted.length && filteredAndSorted.length > 0) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(filteredAndSorted.map(c => c.id)));
+      setSelected(new Set(filteredAndSorted.map(keyOf)));
     }
   }
 
@@ -59,7 +60,7 @@ export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCa
     const data = await chrome.storage.local.get(["tidygptCandidates"]);
     const existing = (data.tidygptCandidates || []) as ConversationCandidate[];
     for (const c of existing) {
-      if (selected.has(c.id)) {
+      if (selected.has(keyOf(c))) {
         c.selectedAction = action;
       }
     }
@@ -73,7 +74,7 @@ export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCa
       ["ID", "Title", "URL", "Source", "UserMsgs", "AsstMsgs", "TotalMsgs", "Score", "Recommendation", "Action"]
     ];
     for (const c of filteredAndSorted) {
-      if (selected.size > 0 && !selected.has(c.id)) continue;
+      if (selected.size > 0 && !selected.has(keyOf(c))) continue;
       const title = c.title || "Untitled";
       rows.push([
         c.id, `"${title.replace(/"/g, '""')}"`, c.url || "", c.source,
@@ -93,7 +94,7 @@ export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCa
   }
 
   function exportJSON() {
-    const items = filteredAndSorted.filter(c => selected.size === 0 || selected.has(c.id));
+    const items = filteredAndSorted.filter(c => selected.size === 0 || selected.has(keyOf(c)));
     const blob = new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -179,13 +180,13 @@ export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCa
           <tbody>
             {filteredAndSorted.map(c => (
               <tr
-                key={c.id}
-                style={{ borderTop: "1px solid #1e1e21", background: selected.has(c.id) ? "#141418" : "transparent", transition: "background 0.1s" }}
-                onMouseEnter={e => { if (!selected.has(c.id)) e.currentTarget.style.background = "#0d0d10"; }}
-                onMouseLeave={e => { if (!selected.has(c.id)) e.currentTarget.style.background = "transparent"; }}
+                key={keyOf(c)}
+                style={{ borderTop: "1px solid #1e1e21", background: selected.has(keyOf(c)) ? "#141418" : "transparent", transition: "background 0.1s" }}
+                onMouseEnter={e => { if (!selected.has(keyOf(c))) e.currentTarget.style.background = "#0d0d10"; }}
+                onMouseLeave={e => { if (!selected.has(keyOf(c))) e.currentTarget.style.background = "transparent"; }}
               >
                 <td style={tdStyle}>
-                  <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggleSelect(c.id)} />
+                  <input type="checkbox" checked={selected.has(keyOf(c))} onChange={() => toggleSelect(keyOf(c))} />
                 </td>
                 <td style={{ ...tdStyle, maxWidth: 280 }}>
                   <div style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginBottom: 2 }}>{c.title || "Untitled"}</div>
@@ -195,7 +196,7 @@ export function ReviewTab({ candidates, onUpdate }: { candidates: ConversationCa
                     {c.riskFlags?.includes("current_chat") && <span style={{ color: "#a78bfa", fontSize: 10, fontWeight: 600 }}>CURRENT</span>}
                   </div>
                 </td>
-                <td style={{ ...tdStyle, color: "#52525b", fontSize: 12 }}>{c.source === "export" ? "Export" : c.source === "live_ui" ? "Live" : c.source}</td>
+                <td style={{ ...tdStyle, color: "#52525b", fontSize: 12 }}>{c.platform ? c.platform[0].toUpperCase() + c.platform.slice(1) : (c.source === "export" ? "ChatGPT Export" : "Live")}</td>
                 <td style={{ ...tdStyle, color: "#71717a", fontVariantNumeric: "tabular-nums" }}>{c.counts?.totalMessages ?? '—'}</td>
                 <td style={{ ...tdStyle, fontVariantNumeric: "tabular-nums", fontWeight: 600, color: (c.score?.total || 0) >= 70 ? "#f87171" : (c.score?.total || 0) >= 40 ? "#fbbf24" : "#71717a" }}>{c.score?.total ?? '—'}</td>
                 <td style={tdStyle}>

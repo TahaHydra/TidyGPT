@@ -101,7 +101,9 @@ export class ExportProvider implements ConversationProvider {
       
       const candidate: ConversationCandidate = {
         id: c.conversation_id || c.id,
-        idHash: c.conversation_id || c.id,
+        providerKey: `chatgpt:${c.conversation_id || c.id}`,
+        platform: "chatgpt",
+        idHash: `chatgpt:${c.conversation_id || c.id}`,
         title,
         url: `https://chatgpt.com/c/${c.conversation_id || c.id}`,
         source: "export",
@@ -149,6 +151,7 @@ export class ExportProvider implements ConversationProvider {
       };
       
       candidate.contentLength = contentLength;
+      candidate.backupAvailable = false;
 
       const score = calculateScore(candidate, this.settings);
       candidate.score = score;

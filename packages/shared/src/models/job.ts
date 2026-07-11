@@ -45,6 +45,7 @@ export type CleanupJob = {
   actionPlan: ActionPlan;
   results: ActionResult[];
   errors: string[];
+  backupCreatedAt?: string;
 };
 
 export type LogEntry = {

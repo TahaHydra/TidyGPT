@@ -10,3 +10,7 @@ dist/
 .eslintcache
 .temp
 tmp/
+
+# Local HTML/source captures used to develop provider adapters.
+# These may contain private account or conversation data.
+pagesources/

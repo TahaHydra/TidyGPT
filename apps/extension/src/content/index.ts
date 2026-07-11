@@ -1,204 +1,235 @@
-import { Selectors } from '@tidygpt/ui-automation';
-import { executeAction } from '@tidygpt/ui-automation';
-import { runAllProbes } from '@tidygpt/ui-automation';
-import type { ConversationCandidate } from '@tidygpt/shared';
+import {
+  detectPlatform,
+  executeAction,
+  getPlatformAdapter,
+  parseConversationId,
+  runAllProbes,
+} from '@tidygpt/ui-automation';
+import type { ConversationCandidate, ConversationBackup, PlatformId } from '@tidygpt/shared';
 
-console.info("[TidyGPT] Content script loaded", location.href);
-
-// Health marker for diagnostic checks from background/popup
+console.info("[TidyGPT] Multi-platform content script loaded", location.href);
 (window as any).__TIDYGPT_LOADED = true;
 
+const platform = detectPlatform();
+const adapter = platform ? getPlatformAdapter(platform) : null;
+
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+function emptyScore(confidence: number) {
+  return {
+    total: 0, shortConversation: 0, oldAge: 0, genericTitle: 0,
+    duplicateTitle: 0, noFiles: 0, noCode: 0, noProject: 0,
+    noProtectedKeyword: 0, lowContentLength: 0, confidence,
+  };
+}
+
 function discoverVisibleChats(): ConversationCandidate[] {
-  const links = Array.from(document.querySelectorAll(Selectors.Sidebar.ChatLink)) as HTMLAnchorElement[];
-  
+  if (!adapter || !platform) return [];
+  const currentId = adapter.conversationPath.exec(location.pathname)?.[1];
   const seen = new Set<string>();
   const candidates: ConversationCandidate[] = [];
 
-  for (const a of links) {
-    const href = a.href;
-    const url = new URL(href, window.location.origin);
-    if (!url.pathname.startsWith('/c/')) continue;
-    
-    const id = url.pathname.replace('/c/', '');
-    if (seen.has(id)) continue;
+  for (const link of Array.from(document.querySelectorAll(adapter.conversationLink)) as HTMLAnchorElement[]) {
+    const id = parseConversationId(link.href, adapter);
+    if (!id || seen.has(id)) continue;
     seen.add(id);
-
-    const title = a.innerText.trim() || a.getAttribute("aria-label") || a.getAttribute("title") || "Untitled";
-
+    const title = link.innerText.trim() || link.getAttribute("aria-label") || link.getAttribute("title") || "Untitled";
+    const providerKey = `${platform}:${id}`;
     candidates.push({
-      id,
-      idHash: id,
-      title,
-      url: href,
-      source: "live_ui",
-      sourceConfidence: 0.9,
-      dates: { dateConfidence: 0 },
-      counts: { countConfidence: 0 },
+      id, providerKey, platform, idHash: providerKey, title, url: link.href,
+      source: "live_ui", sourceConfidence: 0.75,
+      dates: { dateConfidence: 0 }, counts: { countConfidence: 0 },
       signals: {
-        genericTitle: title.toLowerCase() === 'new chat',
-        duplicateTitle: false,
-        hasCode: "unknown",
-        hasFile: "unknown",
-        hasImage: "unknown",
-        hasArtifact: "unknown",
-        isProject: "unknown",
-        isCurrentChat: location.pathname.includes(id),
+        genericTitle: /^(new chat|nouvelle discussion|untitled)$/i.test(title),
+        duplicateTitle: false, hasCode: "unknown", hasFile: "unknown", hasImage: "unknown",
+        hasArtifact: "unknown", isProject: "unknown", isCurrentChat: currentId === id,
         protectedKeywordMatches: [],
       },
-      score: {
-        total: 0,
-        shortConversation: 0,
-        oldAge: 0,
-        genericTitle: 0,
-        duplicateTitle: 0,
-        noFiles: 0,
-        noCode: 0,
-        noProject: 0,
-        noProtectedKeyword: 0,
-        lowContentLength: 0,
-        confidence: 0.9
-      },
-      riskFlags: location.pathname.includes(id) ? ["current_chat"] : [],
-      recommendation: "ignore",
-      selectedAction: "none",
-      status: "discovered"
+      score: emptyScore(0.75),
+      riskFlags: currentId === id ? ["current_chat"] : ["low_confidence_selector"],
+      recommendation: "uncertain", selectedAction: "none", status: "discovered",
     });
   }
-
   return candidates;
 }
 
-async function performDeepScan() {
-  const scrollContainer = document.querySelector(Selectors.Sidebar.ScrollContainer);
+function findScrollContainer(): HTMLElement | null {
+  if (!adapter) return null;
+  const elements = adapter.scrollContainers.flatMap(selector =>
+    Array.from(document.querySelectorAll(selector)) as HTMLElement[]
+  );
+  return elements.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0]
+    ?? document.querySelector(adapter.sidebar) as HTMLElement | null;
+}
+
+async function performDeepScan(idleRounds = 5) {
+  const scrollContainer = findScrollContainer();
   if (!scrollContainer) return discoverVisibleChats();
-  
+
+  const originalTop = scrollContainer.scrollTop;
   const candidates = new Map<string, ConversationCandidate>();
-  let lastHeight = 0;
-  
-  // Lazy scrolling scan
-  for (let i = 0; i < 20; i++) { // limit arbitrary deep scan depth for safety
-    const visible = discoverVisibleChats();
-    for (const c of visible) candidates.set(c.id, c);
-    
-    scrollContainer.scrollBy(0, 500);
-    await new Promise(r => setTimeout(r, 800));
-    
-    if (scrollContainer.scrollTop === lastHeight) break; // reached bottom
-    lastHeight = scrollContainer.scrollTop;
+  let unchangedRounds = 0;
+  let previousTop = -1;
+  scrollContainer.scrollTop = 0;
+  await wait(300);
+
+  // Completion is based on repeated no-progress observations, not a history-size cap.
+  for (let guard = 0; guard < 10_000 && unchangedRounds < Math.max(2, idleRounds); guard++) {
+    const before = candidates.size;
+    for (const candidate of discoverVisibleChats()) candidates.set(candidate.providerKey!, candidate);
+
+    const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+    const nextTop = Math.min(maxTop, scrollContainer.scrollTop + Math.max(300, scrollContainer.clientHeight * 0.75));
+    scrollContainer.scrollTop = nextTop;
+    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await wait(450);
+
+    const progressed = candidates.size > before || scrollContainer.scrollTop !== previousTop;
+    unchangedRounds = progressed ? 0 : unchangedRounds + 1;
+    if (scrollContainer.scrollTop >= maxTop && candidates.size === before) unchangedRounds++;
+    previousTop = scrollContainer.scrollTop;
   }
-  
+
+  scrollContainer.scrollTop = originalTop;
+  const titleCounts = new Map<string, number>();
+  for (const candidate of candidates.values()) {
+    const normalized = (candidate.title ?? '').trim().toLocaleLowerCase();
+    titleCounts.set(normalized, (titleCounts.get(normalized) ?? 0) + 1);
+  }
+  for (const candidate of candidates.values()) {
+    const normalized = (candidate.title ?? '').trim().toLocaleLowerCase();
+    candidate.signals.duplicateTitle = normalized !== 'new chat' && (titleCounts.get(normalized) ?? 0) > 1;
+  }
   return Array.from(candidates.values());
 }
 
-async function countMessagesInCurrentChat(): Promise<{ user: number, assistant: number, ok: boolean }> {
-  // Wait for stable DOM
-  let stableCount = 0;
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 200));
-    if (!document.querySelector(Selectors.Conversation.LoadingSkeleton)) {
-      stableCount++;
-      if (stableCount > 3) break;
-    } else {
-      stableCount = 0;
-    }
+async function waitForConversation() {
+  if (!adapter) return;
+  let stable = 0;
+  let previousCount = -1;
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const count = document.querySelectorAll(adapter.messageRoots).length;
+    const busy = !!document.querySelector(adapter.loading) || !!document.querySelector(adapter.generating);
+    stable = !busy && count > 0 && count === previousCount ? stable + 1 : 0;
+    if (stable >= 3) return;
+    previousCount = count;
+    await wait(250);
   }
+}
 
-  const userMessages = document.querySelectorAll(Selectors.Conversation.UserMessage).length;
-  const assistantMessages = document.querySelectorAll(Selectors.Conversation.AssistantMessage).length;
-  
-  // Detect if generating
-  const isGenerating = !!document.querySelector(Selectors.Conversation.StopGeneratingButton);
+function extractMessages(): ConversationBackup['messages'] {
+  if (!adapter) return [];
+  const entries: Array<{ node: Element; role: "user" | "assistant" | "unknown"; text: string }> = [];
+  const add = (selector: string, role: "user" | "assistant") => {
+    for (const node of Array.from(document.querySelectorAll(selector))) {
+      const text = (node as HTMLElement).innerText?.trim();
+      if (text) entries.push({ node, role, text });
+    }
+  };
+  add(adapter.userMessages, 'user');
+  add(adapter.assistantMessages, 'assistant');
+  entries.sort((a, b) => a.node === b.node ? 0 : (a.node.compareDocumentPosition(b.node) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+
+  const seen = new Set<string>();
+  return entries.flatMap(entry => {
+    const key = `${entry.role}:${entry.text}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ role: entry.role, text: entry.text }];
+  });
+}
+
+async function readCurrentConversation(messageLimit = 20) {
+  if (!adapter || !platform) throw new Error('Unsupported platform');
+  await waitForConversation();
+  const id = adapter.conversationPath.exec(location.pathname)?.[1];
+  if (!id) throw new Error('This is not a conversation URL');
+  const messages = extractMessages();
+  const limit = Math.max(1, messageLimit);
+  const sampled = messages.length <= limit * 2
+    ? messages
+    : [...messages.slice(0, limit), ...messages.slice(-limit)];
+  const title = document.title.replace(/\s*[|–-]\s*(ChatGPT|Claude|Gemini).*$/i, '').trim() || 'Untitled';
+  const times = Array.from(document.querySelectorAll('time[datetime]'));
+  const time = times[times.length - 1]?.getAttribute('datetime') ?? undefined;
+  const backup: ConversationBackup = {
+    providerKey: `${platform}:${id}`, platform, id, title, url: location.href,
+    capturedAt: new Date().toISOString(), messages,
+  };
   return {
-    user: userMessages,
-    assistant: assistantMessages,
-    ok: !isGenerating && (userMessages > 0 || assistantMessages > 0)
+    backup,
+    scanText: sampled.map(item => item.text).join('\n'),
+    counts: {
+      user: messages.filter(item => item.role === 'user').length,
+      assistant: messages.filter(item => item.role === 'assistant').length,
+      total: messages.length,
+    },
+    updatedAt: time,
+    hasCode: messages.some(item => /```|<pre|\b(function|class|const|let|var)\s+[\w$]+/i.test(item.text)),
+    hasFile: !!document.querySelector('a[download], [data-testid*="attachment" i], [data-test-id*="attachment" i]'),
+    hasImage: !!document.querySelector('main img, [role="main"] img'),
+    hasArtifact: !!document.querySelector('[data-testid*="artifact" i], [data-test-id*="artifact" i], [class*="artifact"]'),
   };
 }
 
 async function saveCandidates(candidates: ConversationCandidate[]) {
-  // Send message to background script to save candidates to avoid chrome.storage permission issues in content script
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: "SAVE_CANDIDATES", payload: candidates }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error("[TidyGPT] Error saving candidates:", chrome.runtime.lastError.message);
-        reject(chrome.runtime.lastError);
-      } else {
-        resolve(response);
-      }
-    });
-  });
+  return chrome.runtime.sendMessage({ type: "SAVE_CANDIDATES", payload: candidates });
 }
 
 function injectTidyGPTBadge() {
-  if (document.getElementById("tidygpt-floating-badge")) return;
-
+  if (!adapter || !platform || document.getElementById("tidygpt-floating-badge")) return;
   const badge = document.createElement("button");
   badge.id = "tidygpt-floating-badge";
-  badge.textContent = "TidyGPT Scan";
-  badge.style.position = "fixed";
-  badge.style.right = "18px";
-  badge.style.bottom = "18px";
-  badge.style.zIndex = "2147483647";
-  badge.style.padding = "10px 14px";
-  badge.style.borderRadius = "8px";
-  badge.style.border = "1px solid rgba(255,255,255,.18)";
-  badge.style.background = "#18181b";
-  badge.style.color = "#f4f4f5";
-  badge.style.font = "500 13px system-ui, sans-serif";
-  badge.style.boxShadow = "0 12px 24px rgba(0,0,0,.3)";
-  badge.style.cursor = "pointer";
-  badge.style.transition = "all 0.2s";
-
-  badge.onmouseover = () => { badge.style.background = "#27272a"; };
-  badge.onmouseout = () => { badge.style.background = "#18181b"; };
-
+  badge.textContent = `TidyGPT · Scan ${adapter.label}`;
+  Object.assign(badge.style, {
+    position: "fixed", right: "18px", bottom: "18px", zIndex: "2147483647", padding: "10px 14px",
+    borderRadius: "8px", border: "1px solid rgba(255,255,255,.18)", background: "#18181b",
+    color: "#f4f4f5", font: "500 13px system-ui, sans-serif", boxShadow: "0 12px 24px rgba(0,0,0,.3)", cursor: "pointer",
+  });
   badge.onclick = async () => {
-    badge.textContent = "Scanning...";
-    badge.style.opacity = "0.7";
-    const candidates = await performDeepScan();
-    await saveCandidates(candidates);
-    badge.textContent = `Found ${candidates.length}`;
-    setTimeout(() => { badge.textContent = "TidyGPT Scan"; badge.style.opacity = "1"; }, 3000);
+    badge.disabled = true;
+    badge.textContent = `Discovering ${adapter.label}…`;
+    try {
+      const settings = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
+      const candidates = await performDeepScan(settings?.deepScanIdleRounds ?? 5);
+      await saveCandidates(candidates);
+      badge.textContent = `Reading ${candidates.length} chats…`;
+      await chrome.runtime.sendMessage({ type: 'START_CONTENT_SCAN', payload: { platform, candidates } });
+      badge.textContent = `Queued ${candidates.length} chats`;
+    } catch (error: any) {
+      badge.textContent = `Scan failed: ${error?.message ?? 'unknown error'}`;
+    } finally {
+      setTimeout(() => {
+        badge.textContent = `TidyGPT · Scan ${adapter.label}`;
+        badge.disabled = false;
+      }, 4000);
+    }
   };
-
   document.documentElement.appendChild(badge);
 }
 
 injectTidyGPTBadge();
 let badgeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-const observer = new MutationObserver(() => {
+new MutationObserver(() => {
   if (badgeDebounceTimer) return;
-  badgeDebounceTimer = setTimeout(() => {
-    badgeDebounceTimer = null;
-    injectTidyGPTBadge();
-  }, 2000);
-});
-observer.observe(document.body, { childList: true, subtree: false });
+  badgeDebounceTimer = setTimeout(() => { badgeDebounceTimer = null; injectTidyGPTBadge(); }, 2000);
+}).observe(document.body, { childList: true, subtree: false });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'PING') {
-    sendResponse({ ok: true });
-    return;
-  }
-  
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'PING') { sendResponse({ ok: true, platform }); return; }
   if (message.type === 'DIAGNOSTICS') {
-    const health = runAllProbes();
-    sendResponse({ ok: true, health, url: location.href });
-    return;
+    sendResponse({ ok: true, platform, health: runAllProbes(), url: location.href }); return;
   }
-  
-  if (message.type === 'COUNT_MESSAGES') {
-    countMessagesInCurrentChat().then(sendResponse);
+  if (message.type === 'READ_CURRENT_CONVERSATION') {
+    readCurrentConversation(message.payload?.messageLimit).then(result => sendResponse({ ok: true, ...result }))
+      .catch(error => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-
   if (message.type === 'EXECUTE_ACTION') {
-    const { id, action } = message.payload;
-    executeAction(id, action).then(success => {
-      sendResponse({ success });
-    }).catch(err => {
-      sendResponse({ success: false, error: err.message });
-    });
-    return true; 
+    const { id, action, platform: requestedPlatform } = message.payload;
+    executeAction(id, action, requestedPlatform as PlatformId | undefined)
+      .then(success => sendResponse({ success }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 });

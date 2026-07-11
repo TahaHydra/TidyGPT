@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ExportProvider } from "@tidygpt/providers";
 import type { ConversationCandidate } from "@tidygpt/shared";
 import { defaultSettings } from "@tidygpt/shared";
@@ -7,6 +7,16 @@ import { getSettings } from "@tidygpt/storage";
 export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
   const [importing, setImporting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [progress, setProgress] = useState<any>(null);
+
+  useEffect(() => {
+    chrome.storage.local.get(['tidygptScanProgress']).then(data => setProgress(data.tidygptScanProgress));
+    const listener = (changes: any, area: string) => {
+      if (area === 'local' && changes.tidygptScanProgress) setProgress(changes.tidygptScanProgress.newValue);
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
+  }, []);
 
   async function processJSONFile(file: File) {
     setImporting(true);
@@ -23,9 +33,9 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
       // Merge into storage
       const data = await chrome.storage.local.get(["tidygptCandidates"]);
       const existing = (data.tidygptCandidates || []) as ConversationCandidate[];
-      const existingMap = new Map(existing.map(c => [c.id, c]));
+      const existingMap = new Map(existing.map(c => [c.providerKey || `${c.platform || "chatgpt"}:${c.id}`, c]));
       for (const c of candidates) {
-        existingMap.set(c.id, c);
+        existingMap.set(c.providerKey || `${c.platform || "chatgpt"}:${c.id}`, c);
       }
       
       await chrome.storage.local.set({
@@ -72,18 +82,25 @@ export function ScanTab({ onRefresh }: { onRefresh: () => void }) {
     <div>
       <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 20px", letterSpacing: "-0.01em" }}>Scan & Import</h2>
       
+      {progress && (
+        <div style={{ marginBottom: 18, padding: "12px 16px", background: "#111827", border: "1px solid #1e3a5f", borderRadius: 8, color: "#bfdbfe", fontSize: 13 }}>
+          {progress.platform?.toUpperCase()} content scan: {progress.status}
+          {typeof progress.total === 'number' && ` · ${progress.completed ?? 0}/${progress.total}`}
+          {progress.error && <span style={{ color: "#fca5a5" }}> · {progress.error}</span>}
+        </div>
+      )}
       <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
         
         {/* Live UI Scanner */}
         <div style={{ padding: 24, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
           <div>
-            <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>Live UI Scanner</h3>
+            <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>Live Multi-AI Scanner</h3>
             <p style={{ color: "#71717a", fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>
-              Scans the visible sidebar directly on chatgpt.com. To use this, open ChatGPT in an active tab, click the floating "TidyGPT Scan" button, and TidyGPT will automatically discover and classify conversations.
+              Open ChatGPT, Claude, or Gemini and click its floating TidyGPT button. Discovery follows the full virtualized sidebar, then a private inactive tab reads the first and last configured messages, classifies the real content, and stores a local pre-delete backup.
             </p>
           </div>
           <div style={{ padding: "12px 14px", background: "#18181b", borderRadius: 6, color: "#a1a1aa", fontSize: 12, border: "1px solid #27272a", textAlign: "center" }}>
-            Requires interaction on chatgpt.com
+            ChatGPT · Claude · Gemini
           </div>
         </div>
 

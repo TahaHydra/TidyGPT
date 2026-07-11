@@ -1,5 +1,4 @@
-import { Selectors, TextFallbacks } from "./chatgpt-selectors";
-import { findMenuItemByText, findButtonByText } from "./helpers";
+import { getPlatformAdapter } from "../platforms";
 
 export type ProbeResult = {
   ok: boolean;
@@ -17,24 +16,25 @@ export type UiHealthStatus = {
 };
 
 export function probeSidebar(): ProbeResult {
-  const container = document.querySelector(Selectors.Sidebar.Container);
+  const container = document.querySelector(getPlatformAdapter().sidebar);
   if (!container) return { ok: false, confidence: 0, found: 0, warnings: ["Sidebar container not found"] };
   return { ok: true, confidence: 1.0, found: 1, warnings: [] };
 }
 
 export function probeChatLinks(): ProbeResult {
-  const links = document.querySelectorAll(Selectors.Sidebar.ChatLink);
+  const links = document.querySelectorAll(getPlatformAdapter().conversationLink);
   if (links.length === 0) return { ok: false, confidence: 0, found: 0, warnings: ["No chat links found"] };
   return { ok: true, confidence: 1.0, found: links.length, warnings: [] };
 }
 
 export function probeMenuTrigger(): ProbeResult {
   // Try to find the trigger on any visible chat link
-  const links = document.querySelectorAll(Selectors.Sidebar.ChatLink);
+  const adapter = getPlatformAdapter();
+  const links = document.querySelectorAll(adapter.conversationLink);
   for (const link of Array.from(links).slice(0, 5)) {
-    const wrapper = link.closest(Selectors.Sidebar.DataSidebarItem) || link.parentElement;
+    const wrapper = link.closest(adapter.menuScope) || link.parentElement;
     if (wrapper) {
-      const trigger = wrapper.querySelector(Selectors.Menu.Trigger);
+      const trigger = wrapper.querySelector(adapter.menuTriggers);
       if (trigger) {
         return { ok: true, confidence: 0.9, found: 1, warnings: [] };
       }
@@ -47,7 +47,10 @@ export function probeMenuTrigger(): ProbeResult {
 // we might have to rely on previous heuristics or perform a tiny invisible click if safe.
 // For now, we return uncertain unless we actually open a menu.
 export function probeArchiveAction(): ProbeResult {
-  return { ok: true, confidence: 0.8, found: 0, warnings: ["Probed heuristically"] };
+  const adapter = getPlatformAdapter();
+  return adapter.supportsArchive
+    ? { ok: true, confidence: 0.8, found: 0, warnings: ["Available; verified only during an approved action"] }
+    : { ok: false, confidence: 1, found: 0, warnings: [`${adapter.label} has no native archive capability`] };
 }
 
 export function probeDeleteAction(): ProbeResult {

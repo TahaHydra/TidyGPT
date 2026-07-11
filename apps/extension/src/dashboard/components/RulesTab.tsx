@@ -1,15 +1,33 @@
 import { useState, useEffect } from "react";
 import { getSettings } from "@tidygpt/storage";
-import { defaultSettings, CleanerSettings } from "@tidygpt/shared";
+import { defaultSettings, CleanerSettings, CustomRule } from "@tidygpt/shared";
 
 export function RulesTab() {
   const [settings, setSettings] = useState<CleanerSettings>(defaultSettings);
+  const [rulesText, setRulesText] = useState("[]");
+  const [rulesError, setRulesError] = useState("");
 
   useEffect(() => {
     getSettings().then(s => {
       if (s) setSettings(s);
     });
+    chrome.storage.local.get(['tidygptRules']).then(data => {
+      setRulesText(JSON.stringify(data.tidygptRules || [], null, 2));
+    });
   }, []);
+
+  const saveCustomRules = async () => {
+    try {
+      const rules = JSON.parse(rulesText) as CustomRule[];
+      if (!Array.isArray(rules) || rules.some(rule => !rule.id || !rule.name || !['archive', 'delete', 'keep'].includes(rule.type))) {
+        throw new Error('Rules must be an array with id, name, type, and conditions.');
+      }
+      await chrome.storage.local.set({ tidygptRules: rules });
+      setRulesError('Saved. New rules are applied during the next content scan.');
+    } catch (error: any) {
+      setRulesError(error.message);
+    }
+  };
 
   return (
     <div>
@@ -66,6 +84,19 @@ export function RulesTab() {
                 project: settings.projectBehavior
               }
             }, null, 2)}
+          </div>
+        </div>
+
+        <div style={{ padding: 20, background: "#111113", borderRadius: 8, border: "1px solid #1e1e21", gridColumn: "span 2" }}>
+          <h3 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 600 }}>Custom Title & Body Rules</h3>
+          <p style={{ color: "#71717a", fontSize: 12, lineHeight: 1.5 }}>
+            Conditions support titleContains, titleDoesNotContain, titleRegex, bodyContains, bodyDoesNotContain, bodyRegex, minContentLength, maxContentLength, age/message limits, and safety predicates. Body conditions run against the configured first and last message window.
+          </p>
+          <textarea value={rulesText} onChange={event => setRulesText(event.target.value)} spellCheck={false}
+            style={{ width: "100%", minHeight: 220, resize: "vertical", padding: 12, boxSizing: "border-box", border: "1px solid #27272a", background: "#09090b", color: "#d4d4d8", borderRadius: 6, font: "12px/1.5 monospace" }} />
+          <div style={{ marginTop: 10, display: "flex", gap: 12, alignItems: "center" }}>
+            <button onClick={saveCustomRules} style={{ padding: "7px 14px", background: "#fff", color: "#000", border: 0, borderRadius: 5, fontWeight: 600, cursor: "pointer" }}>Save Rules</button>
+            {rulesError && <span style={{ color: rulesError.startsWith('Saved') ? "#6ee7b7" : "#fca5a5", fontSize: 12 }}>{rulesError}</span>}
           </div>
         </div>
 

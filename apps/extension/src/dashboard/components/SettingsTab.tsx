@@ -95,6 +95,24 @@ export function SettingsTab() {
           </div>
         </div>
 
+        <div style={sectionStyle}>
+          <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 600 }}>Live Content Scan</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <label style={labelStyle}>
+              <span>First and last messages to inspect</span>
+              <input type="number" min="1" max="100" value={settings.contentScanMessageLimit ?? 20} onChange={e => updateSettings({ contentScanMessageLimit: Number(e.target.value) })} style={inputStyle} />
+            </label>
+            <label style={labelStyle}>
+              <span>No-progress rounds before sidebar completion</span>
+              <input type="number" min="2" max="20" value={settings.deepScanIdleRounds ?? 5} onChange={e => updateSettings({ deepScanIdleRounds: Number(e.target.value) })} style={inputStyle} />
+            </label>
+            <label style={{ ...labelStyle, justifyContent: "flex-start", gap: 10 }}>
+              <input type="checkbox" checked={settings.backupBeforeDelete !== false} onChange={e => updateSettings({ backupBeforeDelete: e.target.checked })} />
+              <span>Require and download a content backup before deletion</span>
+            </label>
+          </div>
+        </div>
+
         {/* Protected Keywords */}
         <div style={sectionStyle}>
           <h3 style={{ margin: "0 0 6px", fontSize: 14, fontWeight: 600 }}>Protected Keywords</h3>

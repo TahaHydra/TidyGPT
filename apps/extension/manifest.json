@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "TidyGPT",
-  "version": "1.0.0",
-  "description": "Review, archive, and clean selected chat history on chatgpt.com.",
-  "permissions": ["storage", "scripting", "activeTab"],
+  "version": "2.0.0",
+  "description": "Privately review, back up, archive, and clean ChatGPT, Claude, and Gemini histories.",
+  "permissions": ["storage", "scripting", "activeTab", "tabs"],
   "host_permissions": [
     "https://chatgpt.com/*",
-    "https://chat.openai.com/*"
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*"
   ],
   "action": {
     "default_popup": "popup.html"
@@ -18,7 +20,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
+      ],
       "js": ["assets/content.js"]
     }
   ]
